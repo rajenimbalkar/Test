@@ -1,0 +1,45 @@
+import os
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+import base64
+
+def aes_encrypt(message, key):
+    # Generate a random initialization vector
+    iv = b'0123456789abcdef'
+
+    # Pad the message to the appropriate length
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(message) + padder.finalize()
+
+    # Create an AES cipher object
+    cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+
+    # Encrypt the padded data
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+
+    # Encode the ciphertext in base64 for storage
+    encrypted_message = base64.b64encode(ciphertext)
+
+    return encrypted_message
+
+def encrypt_files_in_directory(directory_path, key):
+    for root, dirs, files in os.walk(directory_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            encrypted_content = aes_encrypt(file_content, key)
+            with open(file_path, 'wb') as f:
+                f.write(encrypted_content)
+            print(f"File '{file_path}' encrypted successfully.")
+
+# Provide your AES encryption key
+encryption_key = b'secretkeysecretke'
+
+# Specify the directory path to encrypt
+directory_to_encrypt = '/tmp'
+
+# Encrypt files in the specified directory
+encrypt_files_in_directory(directory_to_encrypt, encryption_key)

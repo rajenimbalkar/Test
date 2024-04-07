@@ -1,0 +1,55 @@
+import os
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+import base64
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.contrib.hooks.sftp_hook import SFTPHook
+from datetime import datetime
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 3, 21),
+    # Add other default arguments as needed
+}
+
+dag = DAG('encrypt_sftp_files_dag', default_args=default_args, schedule_interval='@daily')
+
+def aes_encrypt(message, key):
+    iv = b'0123456789abcdef'
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(message) + padder.finalize()
+    cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+    encrypted_message = base64.b64encode(ciphertext)
+    return encrypted_message
+
+def encrypt_sftp_files():
+    sftp_hook = SFTPHook(ftp_conn_id='my_sftp_connection')
+    remote_files = sftp_hook.list_directory('/inbox')
+    encryption_key = b'secretkeysecretke'
+
+    for remote_file in remote_files:
+        remote_file_path = os.path.join('/inbox', remote_file)
+        local_tmp_file_path = os.path.join('/tmp', f'encrypted_{remote_file}')
+
+        with sftp_hook.get_conn().open(remote_file_path, 'rb') as remote_file_obj:
+            file_content = remote_file_obj.read()
+
+        encrypted_content = aes_encrypt(file_content, encryption_key)
+
+        with open(local_tmp_file_path, 'wb') as local_tmp_file:
+            local_tmp_file.write(encrypted_content)
+
+        print(f"File '{remote_file}' encrypted and saved to '{local_tmp_file_path}'")
+
+encrypt_files_task = PythonOperator(
+    task_id='encrypt_files_task',
+    python_callable=encrypt_sftp_files,
+    dag=dag,
+)
+
+encrypt_files_task

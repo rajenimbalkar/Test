@@ -1,0 +1,41 @@
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.types.*;
+
+public class ConvertJsonToDatasetRow {
+    public static void main(String[] args) {
+        // Create a SparkSession
+        SparkSession spark = SparkSession.builder()
+                .appName("ConvertJsonToDatasetRow")
+                .master("local") // Use "local" master for local execution
+                .getOrCreate();
+
+        // Define schema for header, data, and trailer
+        StructType headerSchema = new StructType()
+                .add("header_col1", DataTypes.StringType)
+                .add("header_col2", DataTypes.IntegerType);
+
+        StructType dataSchema = new StructType()
+                .add("data_col1", DataTypes.StringType)
+                .add("data_col2", DataTypes.DoubleType);
+
+        StructType trailerSchema = new StructType()
+                .add("trailer_col1", DataTypes.StringType)
+                .add("trailer_col2", DataTypes.IntegerType);
+
+        // Sample JSON string
+        String jsonString = "{\"header\": {\"header_col1\": \"header_value1\", \"header_col2\": 123}, " +
+                             "\"data\": {\"data_col1\": \"data_value2\", \"data_col2\": 456.78}, " +
+                             "\"trailer\": {\"trailer_col1\": \"trailer_value3\", \"trailer_col2\": 789}}";
+
+        // Parse JSON string into Dataset row
+        Dataset<Row> dataset = spark.read()
+                .json(spark.createDataset(Collections.singletonList(jsonString)), StructType.fromDDL("header " + headerSchema.toString() + ", data " + dataSchema.toString() + ", trailer " + trailerSchema.toString()))
+                .selectExpr("header.*", "data.*", "trailer.*");
+
+        // Show the dataset
+        dataset.show();
+
+        // Stop SparkSession
+        spark.stop();
+    }
+}

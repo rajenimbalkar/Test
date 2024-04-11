@@ -1,0 +1,27 @@
+import java.util.HashMap;
+import java.util.Map;
+
+public enum TablePrimaryKeyMapping {
+    TABLE_ONE("table_one", "id"),
+    TABLE_TWO("table_two", "key"),
+    TABLE_THREE("table_three", "primary_key");
+
+    private String tableName;
+    private String primaryKeyColumn;
+
+    // Constructor to initialize table name and primary key column
+    TablePrimaryKeyMapping(String tableName, String primaryKeyColumn) {
+        this.tableName = tableName;
+        this.primaryKeyColumn = primaryKeyColumn;
+    }
+
+    // Method to get the primary key column based on the table name
+    public static String getPrimaryKeyByTableName(String tableName) {
+        for (TablePrimaryKeyMapping mapping : TablePrimaryKeyMapping.values()) {
+            if (mapping.tableName.equalsIgnoreCase(tableName)) {
+                return mapping.primaryKeyColumn;
+            }
+        }
+        return null; // Table name not found
+    }
+}

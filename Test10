@@ -1,0 +1,39 @@
+import React, { useState } from 'react';
+import axios from 'axios';
+
+const PdfDownloader = () => {
+  const [pdfFile, setPdfFile] = useState(null);
+
+  // Function to fetch PDF from backend
+  const fetchPdf = async () => {
+    try {
+      const response = await axios.get('/api/generate-pdf', {
+        responseType: 'blob' // Important: responseType should be 'blob' to handle binary data
+      });
+      setPdfFile(response.data);
+    } catch (error) {
+      console.error('Error fetching PDF:', error);
+    }
+  };
+
+  // Function to handle download button click
+  const downloadPdf = () => {
+    if (pdfFile) {
+      const url = window.URL.createObjectURL(new Blob([pdfFile]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'example.pdf');
+      document.body.appendChild(link);
+      link.click();
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={fetchPdf}>Fetch PDF</button>
+      <button onClick={downloadPdf}>Download PDF</button>
+    </div>
+  );
+};
+
+export default PdfDownloader;

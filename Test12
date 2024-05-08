@@ -1,0 +1,22 @@
+import com.itextpdf.text.Document;
+import com.itextpdf.text.Paragraph;
+import com.itextpdf.text.pdf.PdfWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+
+public class PdfGenerator {
+    public static byte[] generatePdfByteArrayWithIText() throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        Document document = new Document();
+        try {
+            PdfWriter.getInstance(document, baos);
+            document.open();
+            document.add(new Paragraph("Hello, iTextPDF version 5.5.13.3!"));
+        } finally {
+            if (document != null) {
+                document.close();
+            }
+        }
+        return baos.toByteArray();
+    }
+}

@@ -1,0 +1,43 @@
+import java.io.IOException;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+
+public class CreatePDF {
+    public static void main(String[] args) {
+        try {
+            // Create a new PDF document
+            PDDocument document = new PDDocument();
+
+            // Add a blank page to the document
+            PDPage page = new PDPage();
+            document.addPage(page);
+
+            // Start a new content stream
+            PDPageContentStream contentStream = new PDPageContentStream(document, page);
+
+            // Set font and font size
+            contentStream.setFont(PDType1Font.HELVETICA, 12);
+
+            // Write text to the page
+            contentStream.beginText();
+            contentStream.newLineAtOffset(100, 700); // Set position
+            contentStream.showText("Hello, PDFBox!");
+            contentStream.endText();
+
+            // Close the content stream
+            contentStream.close();
+
+            // Save the document
+            document.save("example.pdf");
+
+            // Close the document
+            document.close();
+            
+            System.out.println("PDF created successfully.");
+        } catch (IOException e) {
+            System.err.println("Error creating PDF: " + e.getMessage());
+        }
+    }
+}

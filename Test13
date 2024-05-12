@@ -1,0 +1,35 @@
+import java.util.regex.*;
+
+public class Main {
+
+    public static void main(String[] args) {
+        String jsonString = "{\"key\": \"value\"}"; // Example JSON string
+        String nonJsonString = "Hello, world!"; // Example non-JSON string
+
+        if (isJson(jsonString)) {
+            System.out.println(jsonString + " is a valid JSON.");
+        } else {
+            System.out.println(jsonString + " is not a valid JSON.");
+        }
+
+        if (isJson(nonJsonString)) {
+            System.out.println(nonJsonString + " is a valid JSON.");
+        } else {
+            System.out.println(nonJsonString + " is not a valid JSON.");
+        }
+    }
+
+    public static boolean isJson(String jsonString) {
+        // Regular expression to match JSON format
+        String jsonRegex = "\\s*(\\{.*\\}|\\[.*\\])\\s*";
+
+        // Compile the regular expression
+        Pattern pattern = Pattern.compile(jsonRegex);
+
+        // Match the input string against the pattern
+        Matcher matcher = pattern.matcher(jsonString);
+
+        // Return true if the string matches the JSON format, false otherwise
+        return matcher.matches();
+    }
+}

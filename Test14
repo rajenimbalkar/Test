@@ -1,0 +1,68 @@
+import javax.sql.DataSource;
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class DbFetcher {
+
+    private final DataSource dataSource;
+
+    public DbFetcher(DataSource dataSource) {
+        this.dataSource = dataSource;
+    }
+
+    public List<Object> fetchValues(String tableName, String[] returnColumns, String whereClause) throws SQLException {
+        List<Object> result = new ArrayList<>();
+
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+
+            // Construct the SQL query
+            StringBuilder queryBuilder = new StringBuilder("SELECT ");
+            for (int i = 0; i < returnColumns.length; i++) {
+                queryBuilder.append(returnColumns[i]);
+                if (i < returnColumns.length - 1) {
+                    queryBuilder.append(", ");
+                }
+            }
+            queryBuilder.append(" FROM ").append(tableName);
+            if (whereClause != null && !whereClause.isEmpty()) {
+                queryBuilder.append(" WHERE ").append(whereClause);
+            }
+
+            // Execute the query
+            ResultSet resultSet = statement.executeQuery(queryBuilder.toString());
+
+            // Process the result set
+            while (resultSet.next()) {
+                for (String column : returnColumns) {
+                    result.add(resultSet.getObject(column));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // Example usage:
+    public static void main(String[] args) {
+        // Assuming you have a DataSource instance
+        DataSource dataSource = getDataSource();
+
+        // Example usage:
+        DbFetcher dbFetcher = new DbFetcher(dataSource);
+        try {
+            String[] returnColumns = {"column1", "column2"}; // Columns to return
+            List<Object> values = dbFetcher.fetchValues("your_table", returnColumns, "condition = 'value'");
+            System.out.println("Fetched values: " + values);
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Dummy method to get DataSource instance (replace with your implementation)
+    private static DataSource getDataSource() {
+        // Your DataSource initialization logic goes here
+        return null;
+    }
+}

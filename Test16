@@ -1,0 +1,21 @@
+public enum MyEnum {
+    CONSTANT1("Value1", "Key1"),
+    CONSTANT2("Value2", "Key2"),
+    CONSTANT3("Value3", "Key3");
+
+    private final String value;
+    private final String key;
+
+    MyEnum(String value, String key) {
+        this.value = value;
+        this.key = key;
+    }
+
+    public String getValue() {
+        return value;
+    }
+
+    public String getKey() {
+        return key;
+    }
+}

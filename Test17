@@ -1,0 +1,72 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Map;
+
+public class DynamicUpdateExample {
+
+    // JDBC URL, username, and password of MySQL server
+    private static final String URL = "jdbc:mysql://localhost:3306/yourdatabase";
+    private static final String USER = "yourusername";
+    private static final String PASSWORD = "yourpassword";
+
+    public static void main(String[] args) {
+        // Example usage
+        String tableName = "your_table";
+        Map<String, Object> columnsToUpdate = Map.of(
+            "column1", "value1",
+            "column2", 42,
+            "column3", true
+        );
+        String whereClause = "id = ?"; // The WHERE clause to specify which rows to update
+
+        try {
+            updateTable(tableName, columnsToUpdate, whereClause, 1); // Assume we're updating the row with id = 1
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void updateTable(String tableName, Map<String, Object> columns, String whereClause, Object... whereParams) throws SQLException {
+        if (columns == null || columns.isEmpty()) {
+            throw new IllegalArgumentException("No columns provided to update");
+        }
+
+        // Build the SQL UPDATE statement
+        StringBuilder sql = new StringBuilder("UPDATE ");
+        sql.append(tableName);
+        sql.append(" SET ");
+        
+        int columnCount = 0;
+        for (String column : columns.keySet()) {
+            if (columnCount > 0) {
+                sql.append(", ");
+            }
+            sql.append(column).append(" = ?");
+            columnCount++;
+        }
+        
+        if (whereClause != null && !whereClause.isEmpty()) {
+            sql.append(" WHERE ").append(whereClause);
+        }
+
+        System.out.println("Generated SQL: " + sql.toString());
+
+        // Execute the SQL statement
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASSWORD);
+             PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+
+            int paramIndex = 1;
+            for (Object value : columns.values()) {
+                pstmt.setObject(paramIndex++, value);
+            }
+            for (Object param : whereParams) {
+                pstmt.setObject(paramIndex++, param);
+            }
+
+            int affectedRows = pstmt.executeUpdate();
+            System.out.println("Affected rows: " + affectedRows);
+        }
+    }
+}

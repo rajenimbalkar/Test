@@ -1,0 +1,46 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class Main {
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("Spark Delta Transaction Example")
+                .master("local")
+                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+                .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+                .getOrCreate();
+
+        // Initialize ClassA and ClassB
+        ClassA classA = new ClassA(spark);
+        ClassB classB = new ClassB(spark);
+
+        // Data to be inserted
+        Dataset<Row> newData1 = spark.range(10, 15).toDF("id");
+        Dataset<Row> newData2 = spark.range(15, 20).toDF("id");
+
+        // Start a transaction
+        spark.sql("BEGIN TRANSACTION");
+
+        try {
+            // Insert data using ClassA
+            classA.insertData(newData1);
+
+            // Insert data using ClassB
+            classB.insertData(newData2);
+
+            // Commit the transaction
+            spark.sql("COMMIT");
+        } catch (Exception e) {
+            // Rollback the transaction in case of error
+            spark.sql("ROLLBACK");
+            e.printStackTrace();
+        }
+
+        // Read and show the updated data
+        DeltaTable.forPath(spark, "/tmp/delta-table1").toDF().show();
+        DeltaTable.forPath(spark, "/tmp/delta-table2").toDF().show();
+
+        spark.stop();
+    }
+}

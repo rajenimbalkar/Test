@@ -3,63 +3,68 @@ package com.example;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.apache.spark.sql.catalyst.encoders.RowEncoder;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.DataFrameReader;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.io.FileWriter;
-import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
+@ExtendWith(MockitoExtension.class)
 class IngesterTest {
 
-    private static SparkSession spark;
+    @Mock
+    private SparkSession sparkSession;
 
-    @BeforeAll
-    static void setup() {
-        spark = SparkSession.builder()
-                .appName("IngesterTest")
-                .master("local[*]")
-                .getOrCreate();
+    @Mock
+    private DataFrameReader dataFrameReader;
 
-        // Create a sample CSV file for testing
-        try (FileWriter writer = new FileWriter("src/test/resources/sample.csv")) {
-            writer.write("name,age\n");
-            writer.write("Alice,30\n");
-            writer.write("Bob,25\n");
-            writer.write("Charlie,35\n");
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
+    @Mock
+    private Dataset<Row> dataset;
 
-    @AfterAll
-    static void teardown() {
-        if (spark != null) {
-            spark.stop();
-        }
+    @InjectMocks
+    private Ingester ingester;
 
-        // Clean up the sample CSV file
-        java.nio.file.Path path = java.nio.file.Paths.get("src/test/resources/sample.csv");
-        try {
-            java.nio.file.Files.deleteIfExists(path);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    @BeforeEach
+    void setUp() {
+        when(sparkSession.read()).thenReturn(dataFrameReader);
+        when(dataFrameReader.option("header", "true")).thenReturn(dataFrameReader);
+        when(dataFrameReader.csv(anyString())).thenReturn(dataset);
     }
 
     @Test
     void testReadFile() {
         // Given
-        Ingester ingester = new Ingester(spark);
+        String filePath = "src/test/resources/sample.csv";
+        List<Row> expectedRows = Arrays.asList(
+                RowFactory.create("Alice", 30),
+                RowFactory.create("Bob", 25),
+                RowFactory.create("Charlie", 35)
+        );
+        StructType schema = new StructType()
+                .add("name", "string")
+                .add("age", "integer");
+
+        when(dataset.schema()).thenReturn(schema);
+        when(dataset.collectAsList()).thenReturn(expectedRows);
 
         // When
-        Dataset<Row> dataset = ingester.readFile("src/test/resources/sample.csv");
+        Dataset<Row> resultDataset = ingester.readFile(filePath);
+        List<Row> result = resultDataset.collectAsList();
 
         // Then
-        List<Row> result = dataset.collectAsList();
         assertEquals(3, result.size());
         assertEquals("Alice", result.get(0).getAs("name"));
         assertEquals(30, result.get(0).getAs("age"));

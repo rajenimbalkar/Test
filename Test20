@@ -1,0 +1,158 @@
+package com.example;
+
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.*;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import java.util.Arrays;
+import java.util.Collections;
+
+import static org.mockito.Mockito.*;
+
+@RunWith(MockitoJUnitRunner.class)
+@SpringBootTest
+public class FileProcessorTests {
+
+    @Mock
+    private SparkSession spark;
+
+    @Mock
+    private FileValidator fileValidator;
+
+    @Mock
+    private JobConfig jobConfig;
+
+    @InjectMocks
+    private FileProcessor fileProcessor;
+
+    @Before
+    public void setUp() {
+        MockitoAnnotations.openMocks(this);
+
+        when(jobConfig.getFilePath()).thenReturn("src/test/resources/input.txt");
+        when(jobConfig.getSchemaPath()).thenReturn("src/test/resources/schema.csv");
+        when(jobConfig.getValidationRulesPath()).thenReturn("src/test/resources/validation.txt");
+        when(jobConfig.getMainTable()).thenReturn("main_table");
+        when(jobConfig.getSecondaryTable()).thenReturn("secondary_table");
+        when(jobConfig.getAdditionalColumns()).thenReturn(Arrays.asList("extra_column1", "extra_column2"));
+    }
+
+    @Test
+    public void testProcessFile_Success() {
+        // Mock schema
+        StructType schema = new StructType(new StructField[]{
+                new StructField("field1", DataTypes.StringType, true, Metadata.empty()),
+                new StructField("field2", DataTypes.IntegerType, true, Metadata.empty())
+        });
+
+        // Mock dataset
+        Dataset<Row> dataset = mock(Dataset.class);
+        Dataset<Row> validatedDataset = mock(Dataset.class);
+        Dataset<Row> datasetWithAdditionalColumns = mock(Dataset.class);
+
+        when(spark.read().format("csv").option("delimiter", "").schema(schema).load("src/test/resources/input.txt"))
+                .thenReturn(dataset);
+        when(fileValidator.validate(dataset, "src/test/resources/validation.txt")).thenReturn(validatedDataset);
+        when(validatedDataset.isEmpty()).thenReturn(false);
+        when(fileProcessor.addAdditionalColumns(validatedDataset, Arrays.asList("extra_column1", "extra_column2")))
+                .thenReturn(datasetWithAdditionalColumns);
+
+        // Execute method
+        fileProcessor.processFile();
+
+        // Verify interactions
+        verify(fileValidator).validate(dataset, "src/test/resources/validation.txt");
+        verify(validatedDataset).isEmpty();
+        verify(fileProcessor).writeToDatabase(validatedDataset, "main_table");
+        verify(fileProcessor).addAdditionalColumns(validatedDataset, Arrays.asList("extra_column1", "extra_column2"));
+        verify(fileProcessor).insertIntoSecondaryTable(datasetWithAdditionalColumns, "secondary_table");
+    }
+
+    @Test
+    public void testProcessFile_ValidationFails() {
+        // Mock schema
+        StructType schema = new StructType(new StructField[]{
+                new StructField("field1", DataTypes.StringType, true, Metadata.empty()),
+                new StructField("field2", DataTypes.IntegerType, true, Metadata.empty())
+        });
+
+        // Mock dataset
+        Dataset<Row> dataset = mock(Dataset.class);
+        Dataset<Row> validatedDataset = mock(Dataset.class);
+
+        when(spark.read().format("csv").option("delimiter", "").schema(schema).load("src/test/resources/input.txt"))
+                .thenReturn(dataset);
+        when(fileValidator.validate(dataset, "src/test/resources/validation.txt")).thenReturn(validatedDataset);
+        when(validatedDataset.isEmpty()).thenReturn(true);
+
+        // Execute method
+        fileProcessor.processFile();
+
+        // Verify interactions
+        verify(fileValidator).validate(dataset, "src/test/resources/validation.txt");
+        verify(validatedDataset).isEmpty();
+        verify(fileProcessor, never()).writeToDatabase(any(), anyString());
+        verify(fileProcessor, never()).addAdditionalColumns(any(), anyList());
+        verify(fileProcessor, never()).insertIntoSecondaryTable(any(), anyString());
+    }
+
+    @Test
+    public void testAddAdditionalColumns() {
+        // Mock dataset
+        Dataset<Row> dataset = mock(Dataset.class);
+        Dataset<Row> resultDataset = mock(Dataset.class);
+
+        when(dataset.withColumn("extra_column1", lit("value1"))).thenReturn(resultDataset);
+        when(resultDataset.withColumn("extra_column2", lit("value2"))).thenReturn(resultDataset);
+
+        // Execute method
+        Dataset<Row> output = fileProcessor.addAdditionalColumns(dataset, Arrays.asList("extra_column1", "extra_column2"));
+
+        // Verify result
+        verify(dataset).withColumn("extra_column1", lit("value1"));
+        verify(resultDataset).withColumn("extra_column2", lit("value2"));
+    }
+
+    @Test
+    public void testWriteToDatabase() {
+        // Mock dataset
+        Dataset<Row> dataset = mock(Dataset.class);
+
+        // Execute method
+        fileProcessor.writeToDatabase(dataset, "main_table");
+
+        // Verify interactions
+        verify(dataset).write().format("jdbc")
+                .option("url", "jdbc:mysql://localhost:3306/your_database")
+                .option("dbtable", "main_table")
+                .option("user", "your_username")
+                .option("password", "your_password")
+                .save();
+    }
+
+    @Test
+    public void testInsertIntoSecondaryTable() {
+        // Mock dataset
+        Dataset<Row> dataset = mock(Dataset.class);
+
+        // Execute method
+        fileProcessor.insertIntoSecondaryTable(dataset, "secondary_table");
+
+        // Verify interactions
+        verify(dataset).write().format("jdbc")
+                .option("url", "jdbc:mysql://localhost:3306/your_database")
+                .option("dbtable", "secondary_table")
+                .option("user", "your_username")
+                .option("password", "your_password")
+                .save();
+    }
+}

@@ -1,0 +1,26 @@
+package com.example.demo.entity;
+
+import javax.persistence.MappedSuperclass;
+import javax.persistence.PrePersist;
+import javax.persistence.EntityListeners;
+
+@MappedSuperclass
+@EntityListeners(AuditingEntityListener.class)
+public abstract class BaseEntity {
+
+    private String createdBy;
+
+    @PrePersist
+    public void prePersist() {
+        // The logic to set createdBy is handled by the AuditingEntityListener
+    }
+
+    // Getters and Setters
+    public String getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(String createdBy) {
+        this.createdBy = createdBy;
+    }
+}

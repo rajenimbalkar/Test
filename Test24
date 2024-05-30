@@ -1,0 +1,31 @@
+@Service
+public class FileProcessingService {
+    @Autowired
+    private SparkSession sparkSession;
+
+    @Autowired
+    private ValidationErrorService validationErrorService;
+
+    public void processFile(String filePath) {
+        // Register the custom accumulator
+        ErrorAccumulator errorAccumulator = new ErrorAccumulator();
+        sparkSession.sparkContext().register(errorAccumulator, "ErrorAccumulator");
+
+        // Load the file as an RDD
+        JavaRDD<String> fileRDD = sparkSession.read().textFile(filePath).javaRDD();
+
+        // Process each record and collect validation errors
+        fileRDD.foreach(record -> {
+            Map<String, String> errors = ValidationUtils.validateRecord(record);
+            if (!errors.isEmpty()) {
+                errorAccumulator.add(errors);
+            }
+        });
+
+        // Retrieve the aggregated errors from the accumulator
+        Map<String, String> aggregatedErrors = errorAccumulator.value();
+
+        // Save the validation errors to a database table
+        validationErrorService.saveErrors(aggregatedErrors);
+    }
+}

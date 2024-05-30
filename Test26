@@ -1,0 +1,95 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.Column;
+
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+public class DynamicQueryExample {
+    public static void main(String[] args) {
+        // Initialize Spark Session
+        SparkSession spark = SparkSession.builder()
+            .appName("DynamicQueryExample")
+            .master("local[*]")
+            .getOrCreate();
+
+        // Define the schema
+        StructType schema = new StructType(new StructField[]{
+            DataTypes.createStructField("name", DataTypes.StringType, true),
+            DataTypes.createStructField("age", DataTypes.IntegerType, true),
+            DataTypes.createStructField("salary", DataTypes.DoubleType, true),
+            DataTypes.createStructField("department", DataTypes.StringType, true)
+        });
+
+        // Create data using Row objects
+        List<Row> data = Arrays.asList(
+            RowFactory.create("John Doe", 30, 60000.0, "Engineering"),
+            RowFactory.create("Jane Smith", 25, 75000.0, "Marketing"),
+            RowFactory.create("Sam Brown", 35, 80000.0, "Sales")
+        );
+
+        // Convert the data to a DataFrame
+        Dataset<Row> df = spark.createDataFrame(data, schema);
+
+        // Define column mappings dynamically
+        Map<String, String> employeeColumnMapping = new HashMap<>();
+        employeeColumnMapping.put("name", "emp_name");
+        employeeColumnMapping.put("age", "emp_age");
+        employeeColumnMapping.put("salary", "emp_salary");
+
+        Map<String, String> departmentColumnMapping = new HashMap<>();
+        departmentColumnMapping.put("name", "emp_name");
+        departmentColumnMapping.put("department", "dept_name");
+
+        // Function to rename columns based on the mapping and add an ID column
+        Dataset<Row> renameAndAddColumns(Dataset<Row> df, Map<String, String> columnMapping, String parentIdColumnName) {
+            Column[] columns = columnMapping.entrySet().stream()
+                .map(entry -> functions.col(entry.getKey()).alias(entry.getValue()))
+                .toArray(Column[]::new);
+
+            Dataset<Row> renamedDF = df.select(columns);
+            return renamedDF.withColumn(parentIdColumnName, functions.monotonically_increasing_id());
+        }
+
+        // Rename columns and add parent ID for Employee table
+        Dataset<Row> employeeDF = renameAndAddColumns(df, employeeColumnMapping, "parent_id");
+
+        // Rename columns and add parent ID for Department table
+        Dataset<Row> departmentDF = renameAndAddColumns(df, departmentColumnMapping, "parent_id");
+
+        // JDBC connection properties
+        String jdbcUrl = "jdbc:your_database_url";
+        Properties connectionProperties = new Properties();
+        connectionProperties.put("user", "your_username");
+        connectionProperties.put("password", "your_password");
+
+        // Write to Employee table
+        employeeDF.write()
+            .jdbc(jdbcUrl, "Employee", connectionProperties);
+
+        // Write to Department table
+        departmentDF.write()
+            .jdbc(jdbcUrl, "Department", connectionProperties);
+
+        // Stop Spark Session
+        spark.stop();
+    }
+
+    private static Dataset<Row> renameAndAddColumns(Dataset<Row> df, Map<String, String> columnMapping, String parentIdColumnName) {
+        Column[] columns = columnMapping.entrySet().stream()
+            .map(entry -> functions.col(entry.getKey()).alias(entry.getValue()))
+            .toArray(Column[]::new);
+
+        Dataset<Row> renamedDF = df.select(columns);
+        return renamedDF.withColumn(parentIdColumnName, functions.monotonically_increasing_id());
+    }
+}

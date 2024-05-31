@@ -2,12 +2,12 @@ import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.functions;
+import org.apache.spark.util.AccumulatorV2;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
 
 import java.io.InputStream;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class ValidationExample {
     public static void main(String[] args) {
@@ -23,15 +23,23 @@ public class ValidationExample {
         // Sample DataFrames (header, data, trailer)
         // Define your schemas and create DataFrames as shown previously
 
+        // Initialize accumulator for error messages
+        AccumulatorV2<Map<String, String>, Map<String, String>> errorAccumulator = new ErrorAccumulator();
+        spark.sparkContext().register(errorAccumulator, "Error Accumulator");
+
         // Apply validation rules
-        Dataset<Row> headerDF = applyValidationRules(spark, headerDF, validationRules.get("header"));
-        Dataset<Row> dataDF = applyValidationRules(spark, dataDF, validationRules.get("data"));
-        Dataset<Row> trailerDF = applyValidationRules(spark, trailerDF, validationRules.get("trailer"));
+        Dataset<Row> headerDF = applyValidationRules(spark, headerDF, validationRules.get("header"), errorAccumulator);
+        Dataset<Row> dataDF = applyValidationRules(spark, dataDF, validationRules.get("data"), errorAccumulator);
+        Dataset<Row> trailerDF = applyValidationRules(spark, trailerDF, validationRules.get("trailer"), errorAccumulator);
 
         // Show results
         headerDF.show();
         dataDF.show();
         trailerDF.show();
+
+        // Print collected errors
+        System.out.println("Validation Errors:");
+        errorAccumulator.value().forEach((row, error) -> System.out.println("Row: " + row + " Error: " + error));
 
         // Stop SparkSession
         spark.stop();
@@ -47,34 +55,96 @@ public class ValidationExample {
         }
     }
 
-    public static Dataset<Row> applyValidationRules(SparkSession spark, Dataset<Row> df, List<Map<String, Object>> rules) {
+    public static Dataset<Row> applyValidationRules(SparkSession spark, Dataset<Row> df, List<Map<String, Object>> rules, AccumulatorV2<Map<String, String>, Map<String, String>> errorAccumulator) {
         for (Map<String, Object> rule : rules) {
             String field = (String) rule.get("field");
             List<Map<String, Object>> fieldRules = (List<Map<String, Object>>) rule.get("rules");
 
             for (Map<String, Object> fieldRule : fieldRules) {
                 String type = (String) fieldRule.get("type");
+                String message = (String) fieldRule.get("message");
                 switch (type) {
                     case "not_null":
-                        df = df.filter(df.col(field).isNotNull());
+                        df = df.filter(row -> {
+                            if (row.isNullAt(row.fieldIndex(field))) {
+                                errorAccumulator.add(Collections.singletonMap(row.toString(), message));
+                                return false;
+                            }
+                            return true;
+                        });
                         break;
                     case "max_length":
                         int maxLength = (int) fieldRule.get("value");
-                        df = df.filter(functions.length(df.col(field)).leq(maxLength));
+                        df = df.filter(row -> {
+                            if (row.getString(row.fieldIndex(field)).length() > maxLength) {
+                                errorAccumulator.add(Collections.singletonMap(row.toString(), message));
+                                return false;
+                            }
+                            return true;
+                        });
                         break;
                     case "range":
                         int min = (int) fieldRule.get("min");
                         int max = (int) fieldRule.get("max");
-                        df = df.filter(df.col(field).geq(min).and(df.col(field).leq(max)));
+                        df = df.filter(row -> {
+                            int value = row.getInt(row.fieldIndex(field));
+                            if (value < min || value > max) {
+                                errorAccumulator.add(Collections.singletonMap(row.toString(), message));
+                                return false;
+                            }
+                            return true;
+                        });
                         break;
                     case "pattern":
                         String pattern = (String) fieldRule.get("value");
-                        df = df.filter(df.col(field).rlike(pattern));
+                        df = df.filter(row -> {
+                            if (!row.getString(row.fieldIndex(field)).matches(pattern)) {
+                                errorAccumulator.add(Collections.singletonMap(row.toString(), message));
+                                return false;
+                            }
+                            return true;
+                        });
                         break;
                     // Add more cases for other types of validation rules
                 }
             }
         }
         return df;
+    }
+}
+
+class ErrorAccumulator extends AccumulatorV2<Map<String, String>, Map<String, String>> {
+    private Map<String, String> errors = new HashMap<>();
+
+    @Override
+    public boolean isZero() {
+        return errors.isEmpty();
+    }
+
+    @Override
+    public AccumulatorV2<Map<String, String>, Map<String, String>> copy() {
+        ErrorAccumulator newAcc = new ErrorAccumulator();
+        newAcc.errors.putAll(this.errors);
+        return newAcc;
+    }
+
+    @Override
+    public void reset() {
+        errors.clear();
+    }
+
+    @Override
+    public void add(Map<String, String> v) {
+        errors.putAll(v);
+    }
+
+    @Override
+    public void merge(AccumulatorV2<Map<String, String>, Map<String, String>> other) {
+        errors.putAll(other.value());
+    }
+
+    @Override
+    public Map<String, String> value() {
+        return errors;
     }
 }

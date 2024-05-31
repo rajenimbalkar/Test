@@ -1,0 +1,80 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.functions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.Constructor;
+
+import java.io.InputStream;
+import java.util.List;
+import java.util.Map;
+
+public class ValidationExample {
+    public static void main(String[] args) {
+        // Create SparkSession
+        SparkSession spark = SparkSession.builder()
+            .appName("ValidationExample")
+            .master("local[*]")
+            .getOrCreate();
+
+        // Load validation rules
+        Map<String, List<Map<String, Object>>> validationRules = loadValidationRules("/validation_rules.yaml");
+
+        // Sample DataFrames (header, data, trailer)
+        // Define your schemas and create DataFrames as shown previously
+
+        // Apply validation rules
+        Dataset<Row> headerDF = applyValidationRules(spark, headerDF, validationRules.get("header"));
+        Dataset<Row> dataDF = applyValidationRules(spark, dataDF, validationRules.get("data"));
+        Dataset<Row> trailerDF = applyValidationRules(spark, trailerDF, validationRules.get("trailer"));
+
+        // Show results
+        headerDF.show();
+        dataDF.show();
+        trailerDF.show();
+
+        // Stop SparkSession
+        spark.stop();
+    }
+
+    public static Map<String, List<Map<String, Object>>> loadValidationRules(String filePath) {
+        Yaml yaml = new Yaml(new Constructor(Map.class));
+        try (InputStream inputStream = ValidationExample.class.getResourceAsStream(filePath)) {
+            return yaml.load(inputStream);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public static Dataset<Row> applyValidationRules(SparkSession spark, Dataset<Row> df, List<Map<String, Object>> rules) {
+        for (Map<String, Object> rule : rules) {
+            String field = (String) rule.get("field");
+            List<Map<String, Object>> fieldRules = (List<Map<String, Object>>) rule.get("rules");
+
+            for (Map<String, Object> fieldRule : fieldRules) {
+                String type = (String) fieldRule.get("type");
+                switch (type) {
+                    case "not_null":
+                        df = df.filter(df.col(field).isNotNull());
+                        break;
+                    case "max_length":
+                        int maxLength = (int) fieldRule.get("value");
+                        df = df.filter(functions.length(df.col(field)).leq(maxLength));
+                        break;
+                    case "range":
+                        int min = (int) fieldRule.get("min");
+                        int max = (int) fieldRule.get("max");
+                        df = df.filter(df.col(field).geq(min).and(df.col(field).leq(max)));
+                        break;
+                    case "pattern":
+                        String pattern = (String) fieldRule.get("value");
+                        df = df.filter(df.col(field).rlike(pattern));
+                        break;
+                    // Add more cases for other types of validation rules
+                }
+            }
+        }
+        return df;
+    }
+}

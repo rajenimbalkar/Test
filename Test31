@@ -1,0 +1,37 @@
+header:
+  - field: header_info
+    rules:
+      - type: not_null
+        message: "Header info must not be null."
+      - type: max_length
+        value: 50
+        message: "Header info must not exceed 50 characters."
+      - type: pattern
+        value: "^[A-Z][a-zA-Z0-9]*$"
+        message: "Header info must start with a capital letter and contain only alphanumeric characters."
+
+data:
+  - field: name
+    rules:
+      - type: not_null
+        message: "Name must not be null."
+      - type: max_length
+        value: 100
+        message: "Name must not exceed 100 characters."
+      - type: pattern
+        value: "^[A-Za-z ]+$"
+        message: "Name must contain only letters and spaces."
+  - field: age
+    rules:
+      - type: not_null
+        message: "Age must not be null."
+      - type: range
+        min: 0
+        max: 120
+        message: "Age must be between 0 and 120."
+
+trailer:
+  - field: trailer_info
+    rules:
+      - type: not_null
+        message: "Trailer info must not be null."

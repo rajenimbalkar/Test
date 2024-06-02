@@ -9,30 +9,15 @@ import java.util.stream.Collectors;
 
 public class DataSectionCombiner {
 
-    public static StructType createUnifiedSchema(Map<String, SchemaSection> sections) {
+    public static StructType createUnifiedSchema(Map<String, StructType> sectionSchemas) {
         List<StructField> fields = new ArrayList<>();
-        for (SchemaSection section : sections.values()) {
-            for (FieldSchema field : section.schemaFields) {
-                fields.add(new StructField(field.name, getDataType(field.type), true, Metadata.empty()));
-            }
+        for (StructType schema : sectionSchemas.values()) {
+            fields.addAll(Arrays.asList(schema.fields()));
         }
         return DataTypes.createStructType(fields);
     }
 
-    public static DataType getDataType(String type) {
-        switch (type) {
-            case "StringType":
-                return DataTypes.StringType;
-            case "IntegerType":
-                return DataTypes.IntegerType;
-            case "DoubleType":
-                return DataTypes.DoubleType;
-            default:
-                throw new IllegalArgumentException("Unsupported data type: " + type);
-        }
-    }
-
-    public static List<Row> combineSections(Map<String, List<Row>> sectionMap, Map<String, SchemaSection> sections) {
+    public static List<Row> combineSections(Map<String, List<Row>> sectionMap, Map<String, StructType> sectionSchemas) {
         List<Row> combinedRows = new ArrayList<>();
 
         int maxSize = sectionMap.values().stream().mapToInt(List::size).max().orElse(0);
@@ -43,11 +28,11 @@ public class DataSectionCombiner {
             for (Map.Entry<String, List<Row>> entry : sectionMap.entrySet()) {
                 String sectionKey = entry.getKey();
                 List<Row> rows = entry.getValue();
-                SchemaSection schemaSection = sections.get(sectionKey);
+                StructType schema = sectionSchemas.get(sectionKey);
 
-                Row row = (i < rows.size()) ? rows.get(i) : createEmptyRow(schemaSection);
+                Row row = (i < rows.size()) ? rows.get(i) : createEmptyRow(schema);
 
-                for (StructField field : getSchemaFields(schemaSection)) {
+                for (StructField field : schema.fields()) {
                     combinedValues.add(row.get(row.fieldIndex(field.name())));
                 }
             }
@@ -56,16 +41,10 @@ public class DataSectionCombiner {
         return combinedRows;
     }
 
-    public static Row createEmptyRow(SchemaSection schemaSection) {
-        List<Object> emptyValues = schemaSection.schemaFields.stream()
+    public static Row createEmptyRow(StructType schema) {
+        List<Object> emptyValues = Arrays.stream(schema.fields())
                 .map(field -> null)
                 .collect(Collectors.toList());
         return RowFactory.create(emptyValues.toArray());
-    }
-
-    public static List<StructField> getSchemaFields(SchemaSection schemaSection) {
-        return schemaSection.schemaFields.stream()
-                .map(field -> new StructField(field.name, getDataType(field.type), true, Metadata.empty()))
-                .collect(Collectors.toList());
     }
 }

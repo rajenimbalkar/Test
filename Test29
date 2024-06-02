@@ -48,3 +48,26 @@ public class DataSectionCombiner {
         return RowFactory.create(emptyValues.toArray());
     }
 }
+public static List<Row> combineSections(Map<String, List<Row>> sectionMap, Map<String, StructType> sectionSchemas) {
+    List<Row> combinedRows = new ArrayList<>();
+
+    int maxSize = sectionMap.values().stream().mapToInt(List::size).max().orElse(0);
+
+    for (int i = 0; i < maxSize; i++) {
+        List<Object> combinedValues = new ArrayList<>();
+
+        for (Map.Entry<String, List<Row>> entry : sectionMap.entrySet()) {
+            String sectionKey = entry.getKey();
+            List<Row> rows = entry.getValue();
+            StructType schema = sectionSchemas.get(sectionKey);
+
+            Row row = (i < rows.size()) ? rows.get(i) : createEmptyRow(schema);
+
+            for (StructField field : schema.fields()) {
+                combinedValues.add(row.get(row.fieldIndex(field.name())));
+            }
+        }
+        combinedRows.add(RowFactory.create(combinedValues.toArray()));
+    }
+    return combinedRows;
+}

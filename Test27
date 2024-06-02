@@ -1,0 +1,165 @@
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.types.*;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.util.*;
+
+public class DynamicSectionFileReader {
+
+    public static void main(String[] args) throws Exception {
+        // Create SparkSession
+        SparkSession spark = SparkSession.builder()
+                .appName("DynamicSectionFileReader")
+                .master("local[*]")
+                .getOrCreate();
+
+        // Load schema definitions from CSV
+        Map<String, SchemaSection> schemaMap = loadSchema("path/to/schema.csv");
+
+        // Read positional flat file as a list of lines
+        List<String> lines = spark.read().textFile("path/to/positional_file.txt").collectAsList();
+
+        // Process sections
+        Map<String, List<Row>> sectionRows = new HashMap<>();
+        for (String section : schemaMap.keySet()) {
+            sectionRows.put(section, new ArrayList<>());
+        }
+
+        for (String line : lines) {
+            String section = identifySection(line, schemaMap);
+            if (section != null) {
+                sectionRows.get(section).add(parseRow(line, schemaMap.get(section).schema));
+            }
+        }
+
+        // Merge all data sections into one unified DataFrame
+        List<Row> unifiedDataRows = new ArrayList<>();
+        for (String section : schemaMap.keySet()) {
+            if (section.startsWith("data")) {
+                unifiedDataRows.addAll(sectionRows.get(section));
+            }
+        }
+
+        // Create unified schema
+        StructType unifiedSchema = createUnifiedSchema(schemaMap);
+
+        // Create DataFrames for header, trailer, and unified data
+        Dataset<Row> headerDF = spark.createDataFrame(sectionRows.get("header"), schemaMap.get("header").schema);
+        Dataset<Row> unifiedDataDF = spark.createDataFrame(unifiedDataRows, unifiedSchema);
+        Dataset<Row> trailerDF = spark.createDataFrame(sectionRows.get("trailer"), schemaMap.get("trailer").schema);
+
+        // Show DataFrames
+        headerDF.show();
+        unifiedDataDF.show();
+        trailerDF.show();
+
+        // Stop SparkSession
+        spark.stop();
+    }
+
+    public static Map<String, SchemaSection> loadSchema(String schemaFilePath) throws Exception {
+        Map<String, List<StructField>> schemaFieldsMap = new HashMap<>();
+        Map<String, String> sectionMarkersMap = new HashMap<>();
+
+        try (BufferedReader br = new BufferedReader(new FileReader(schemaFilePath))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = line.split(",");
+                String section = parts[0];
+                String fieldName = parts[1];
+                int startPos = Integer.parseInt(parts[2]);
+                int length = Integer.parseInt(parts[3]);
+                String dataType = parts[4];
+                String marker = parts.length > 5 ? parts[5] : "";
+
+                DataType type;
+                switch (dataType) {
+                    case "StringType":
+                        type = DataTypes.StringType;
+                        break;
+                    case "IntegerType":
+                        type = DataTypes.IntegerType;
+                        break;
+                    case "DoubleType":
+                        type = DataTypes.DoubleType;
+                        break;
+                    // Add more data types as needed
+                    default:
+                        throw new IllegalArgumentException("Unsupported data type: " + dataType);
+                }
+
+                Metadata metadata = new MetadataBuilder()
+                        .putLong("start_pos", startPos)
+                        .putLong("length", length)
+                        .build();
+
+                StructField field = new StructField(fieldName, type, true, metadata);
+                schemaFieldsMap.computeIfAbsent(section, k -> new ArrayList<>()).add(field);
+                sectionMarkersMap.put(section, marker);
+            }
+        }
+
+        Map<String, SchemaSection> schemaMap = new HashMap<>();
+        for (Map.Entry<String, List<StructField>> entry : schemaFieldsMap.entrySet()) {
+            String section = entry.getKey();
+            StructType schema = DataTypes.createStructType(entry.getValue());
+            String marker = sectionMarkersMap.get(section);
+            schemaMap.put(section, new SchemaSection(schema, marker));
+        }
+
+        return schemaMap;
+    }
+
+    private static String identifySection(String line, Map<String, SchemaSection> schemaMap) {
+        for (Map.Entry<String, SchemaSection> entry : schemaMap.entrySet()) {
+            String section = entry.getKey();
+            String marker = entry.getValue().marker;
+            if (marker.isEmpty() || line.startsWith(marker)) {
+                return section;
+            }
+        }
+        return null;
+    }
+
+    private static Row parseRow(String line, StructType schema) {
+        List<Object> values = new ArrayList<>();
+        for (StructField field : schema.fields()) {
+            int startPos = (int) field.metadata().getLong("start_pos");
+            int length = (int) field.metadata().getLong("length");
+            String rawValue = line.substring(startPos, startPos + length).trim();
+
+            Object value;
+            if (field.dataType() == DataTypes.StringType) {
+                value = rawValue;
+            } else if (field.dataType() == DataTypes.IntegerType) {
+                value = Integer.parseInt(rawValue);
+            } else if (field.dataType() == DataTypes.DoubleType) {
+                value = Double.parseDouble(rawValue);
+            } else {
+                throw new IllegalArgumentException("Unsupported data type: " + field.dataType());
+            }
+            values.add(value);
+        }
+        return RowFactory.create(values.toArray());
+    }
+
+    private static StructType createUnifiedSchema(Map<String, SchemaSection> schemaMap) {
+        Set<StructField> unifiedFields = new LinkedHashSet<>();
+        for (String section : schemaMap.keySet()) {
+            if (section.startsWith("data")) {
+                unifiedFields.addAll(Arrays.asList(schemaMap.get(section).schema.fields()));
+            }
+        }
+        return DataTypes.createStructType(new ArrayList<>(unifiedFields));
+    }
+
+    static class SchemaSection {
+        StructType schema;
+        String marker;
+
+        SchemaSection(StructType schema, String marker) {
+            this.schema = schema;
+            this.marker = marker;
+        }
+    }
+}

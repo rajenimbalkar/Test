@@ -1,0 +1,71 @@
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.types.*;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class DataSectionCombiner {
+
+    public static StructType createUnifiedSchema(Map<String, SchemaSection> sections) {
+        List<StructField> fields = new ArrayList<>();
+        for (SchemaSection section : sections.values()) {
+            for (FieldSchema field : section.schemaFields) {
+                fields.add(new StructField(field.name, getDataType(field.type), true, Metadata.empty()));
+            }
+        }
+        return DataTypes.createStructType(fields);
+    }
+
+    public static DataType getDataType(String type) {
+        switch (type) {
+            case "StringType":
+                return DataTypes.StringType;
+            case "IntegerType":
+                return DataTypes.IntegerType;
+            case "DoubleType":
+                return DataTypes.DoubleType;
+            default:
+                throw new IllegalArgumentException("Unsupported data type: " + type);
+        }
+    }
+
+    public static List<Row> combineSections(Map<String, List<Row>> sectionMap, Map<String, SchemaSection> sections) {
+        List<Row> combinedRows = new ArrayList<>();
+
+        int maxSize = sectionMap.values().stream().mapToInt(List::size).max().orElse(0);
+
+        for (int i = 0; i < maxSize; i++) {
+            List<Object> combinedValues = new ArrayList<>();
+
+            for (Map.Entry<String, List<Row>> entry : sectionMap.entrySet()) {
+                String sectionKey = entry.getKey();
+                List<Row> rows = entry.getValue();
+                SchemaSection schemaSection = sections.get(sectionKey);
+
+                Row row = (i < rows.size()) ? rows.get(i) : createEmptyRow(schemaSection);
+
+                for (StructField field : getSchemaFields(schemaSection)) {
+                    combinedValues.add(row.get(row.fieldIndex(field.name())));
+                }
+            }
+            combinedRows.add(RowFactory.create(combinedValues.toArray()));
+        }
+        return combinedRows;
+    }
+
+    public static Row createEmptyRow(SchemaSection schemaSection) {
+        List<Object> emptyValues = schemaSection.schemaFields.stream()
+                .map(field -> null)
+                .collect(Collectors.toList());
+        return RowFactory.create(emptyValues.toArray());
+    }
+
+    public static List<StructField> getSchemaFields(SchemaSection schemaSection) {
+        return schemaSection.schemaFields.stream()
+                .map(field -> new StructField(field.name, getDataType(field.type), true, Metadata.empty()))
+                .collect(Collectors.toList());
+    }
+}

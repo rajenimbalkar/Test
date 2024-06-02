@@ -1,0 +1,274 @@
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.types.*;
+import scala.Tuple2;
+
+import java.io.File;
+import java.io.Serializable;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.util.*;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+public class DynamicSectionFileProcessor implements Serializable {
+
+    public static void main(String[] args) throws Exception {
+        SparkSession spark = SparkSession.builder()
+                .appName("DynamicSectionFileProcessor")
+                .master("local[*]")
+                .getOrCreate();
+        JavaSparkContext jsc = new JavaSparkContext(spark.sparkContext());
+
+        ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
+        ValidationRules validationRules = mapper.readValue(new File("path/to/validation_rules.yaml"), ValidationRules.class);
+
+        AccumulatorParam<List<ValidationError>> accumulatorParam = new ValidationErrorAccumulatorParam();
+        final Accumulator<List<ValidationError>> validationErrorAccumulator = jsc.accumulator(new ArrayList<>(), accumulatorParam);
+
+        List<String> lines = spark.read().textFile("path/to/positional_file.txt").collectAsList();
+
+        List<List<String>> sets = splitByTrailer(lines, validationRules.sections.get("trailer").marker);
+
+        List<Row> headerRows = new ArrayList<>();
+        List<Row> dataRows = new ArrayList<>();
+        List<Row> trailerRows = new ArrayList<>();
+
+        for (List<String> set : sets) {
+            for (String line : set) {
+                String section = identifySection(line, validationRules);
+                if (section != null) {
+                    SchemaSection schemaSection = validationRules.sections.get(section);
+                    Row row = parseRow(line, schemaSection);
+                    if (validateRow(row, schemaSection, validationErrorAccumulator)) {
+                        switch (section) {
+                            case "header":
+                                headerRows.add(row);
+                                break;
+                            case "data":
+                                dataRows.add(row);
+                                break;
+                            case "trailer":
+                                trailerRows.add(row);
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+
+        StructType headerSchema = createSchema(validationRules.sections.get("header").schemaFields);
+        StructType dataSchema = createSchema(validationRules.sections.get("data").schemaFields);
+        StructType trailerSchema = createSchema(validationRules.sections.get("trailer").schemaFields);
+
+        Dataset<Row> headerDF = spark.createDataFrame(headerRows, headerSchema);
+        Dataset<Row> dataDF = spark.createDataFrame(dataRows, dataSchema);
+        Dataset<Row> trailerDF = spark.createDataFrame(trailerRows, trailerSchema);
+
+        insertIntoDatabase(headerDF, validationRules.sections.get("header").tableColumnMap);
+        insertIntoDatabase(dataDF, validationRules.sections.get("data").tableColumnMap);
+        insertIntoDatabase(trailerDF, validationRules.sections.get("trailer").tableColumnMap);
+
+        List<ValidationError> errors = validationErrorAccumulator.value();
+        errors.forEach(error -> System.out.println("Error: " + error.message));
+
+        spark.stop();
+    }
+
+    public static List<List<String>> splitByTrailer(List<String> lines, String trailerMarker) {
+        List<List<String>> sets = new ArrayList<>();
+        List<String> currentSet = new ArrayList<>();
+        for (String line : lines) {
+            currentSet.add(line);
+            if (line.startsWith(trailerMarker)) {
+                sets.add(new ArrayList<>(currentSet));
+                currentSet.clear();
+            }
+        }
+        if (!currentSet.isEmpty()) {
+            sets.add(currentSet);
+        }
+        return sets;
+    }
+
+    public static String identifySection(String line, ValidationRules validationRules) {
+        for (Map.Entry<String, SchemaSection> entry : validationRules.sections.entrySet()) {
+            String section = entry.getKey();
+            String marker = entry.getValue().marker;
+            if (line.startsWith(marker)) {
+                return section;
+            }
+        }
+        return null;
+    }
+
+    public static Row parseRow(String line, SchemaSection schemaSection) {
+        List<Object> values = new ArrayList<>();
+        for (FieldSchema field : schemaSection.schemaFields) {
+            int startPos = field.startPos;
+            int length = field.length;
+            String rawValue = line.substring(startPos, startPos + length).trim();
+
+            Object value;
+            switch (field.type) {
+                case "StringType":
+                    value = rawValue;
+                    break;
+                case "IntegerType":
+                    value = Integer.parseInt(rawValue);
+                    break;
+                case "DoubleType":
+                    value = Double.parseDouble(rawValue);
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported data type: " + field.type);
+            }
+            values.add(value);
+        }
+        return RowFactory.create(values.toArray());
+    }
+
+    public static boolean validateRow(Row row, SchemaSection schemaSection, Accumulator<List<ValidationError>> validationErrorAccumulator) {
+        boolean isValid = true;
+        List<ValidationError> validationErrors = new ArrayList<>();
+        for (FieldSchema fieldSchema : schemaSection.schemaFields) {
+            Object value = row.get(row.fieldIndex(fieldSchema.name));
+            for (ValidationRule rule : fieldSchema.validations) {
+                if (rule.type.equals("regex")) {
+                    if (!Pattern.matches(rule.pattern, value.toString())) {
+                        validationErrors.add(new ValidationError(row, fieldSchema.name, rule.message));
+                        isValid = false;
+                    }
+                } else if (rule.type.equals("range")) {
+                    if (value instanceof Number) {
+                        double numericValue = ((Number) value).doubleValue();
+                        if (numericValue < rule.min || numericValue > rule.max) {
+                            validationErrors.add(new ValidationError(row, fieldSchema.name, rule.message));
+                            isValid = false;
+                        }
+                    }
+                }
+            }
+        }
+        if (!validationErrors.isEmpty()) {
+            validationErrorAccumulator.add(validationErrors);
+        }
+        return isValid;
+    }
+
+    public static StructType createSchema(List<FieldSchema> schemaFields) {
+        List<StructField> fields = schemaFields.stream()
+                .map(field -> new StructField(field.name, getDataType(field.type), true, Metadata.empty()))
+                .collect(Collectors.toList());
+        return DataTypes.createStructType(fields);
+    }
+
+    public static DataType getDataType(String type) {
+        switch (type) {
+            case "StringType":
+                return DataTypes.StringType;
+            case "IntegerType":
+                return DataTypes.IntegerType;
+            case "DoubleType":
+                return DataTypes.DoubleType;
+            default:
+                throw new IllegalArgumentException("Unsupported data type: " + type);
+        }
+    }
+
+    public static void insertIntoDatabase(Dataset<Row> df, Map<String, String> tableColumnMap) throws Exception {
+        String url = "jdbc:your_database_url";
+        String user = "your_database_user";
+        String password = "your_database_password";
+
+        try (Connection conn = DriverManager.getConnection(url, user, password)) {
+            df.foreach(row -> {
+                String tableName = tableColumnMap.values().iterator().next();  // Assuming all columns belong to the same table
+                StringBuilder query = new StringBuilder("INSERT INTO ").append(tableName).append(" (");
+                StringBuilder values = new StringBuilder("VALUES (");
+
+                for (String field : df.schema().fieldNames()) {
+                    query.append(tableColumnMap.get(field)).append(",");
+                    values.append("?,");
+                }
+
+                query.setLength(query.length() - 1);  // Remove last comma
+                values.setLength(values.length() - 1);  // Remove last comma
+                query.append(") ").append(values).append(")");
+
+                try (PreparedStatement pstmt = conn.prepareStatement(query.toString())) {
+                    int index = 1;
+                    for (String field : df.schema().fieldNames()) {
+                        pstmt.setObject(index++, row.getAs(field));
+                    }
+                    pstmt.executeUpdate();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+    }
+
+    static class ValidationError implements Serializable {
+        Row row;
+        String field;
+        String message;
+
+        public ValidationError() {}
+
+        public ValidationError(Row row, String field, String message) {
+            this.row = row;
+            this.field = field;
+            this.message = message;
+        }
+    }
+
+    static class ValidationErrorAccumulatorParam implements AccumulatorParam<List<ValidationError>>, Serializable {
+        @Override
+        public List<ValidationError> addAccumulator(List<ValidationError> t1, List<ValidationError> t2) {
+            t1.addAll(t2);
+            return t1;
+        }
+
+        @Override
+        public List<ValidationError> addInPlace(List<ValidationError> r1, List<ValidationError> r2) {
+            r1.addAll(r2);
+            return r1;
+        }
+
+        @Override
+        public List<ValidationError> zero(List<ValidationError> initialValue) {
+            return new ArrayList<>();
+        }
+    }
+
+    static class ValidationRules implements Serializable {
+        Map<String, SchemaSection> sections;
+    }
+
+    static class SchemaSection implements Serializable {
+        String marker;
+        List<FieldSchema> schemaFields;
+        Map<String, String> tableColumnMap;
+    }
+
+    static class FieldSchema implements Serializable {
+        String name;
+        int startPos;
+        int length;
+        String type;
+        List<ValidationRule> validations;
+    }
+
+    static class ValidationRule implements Serializable {
+        String type;
+        String pattern;
+        double min;
+        double max;
+        String message;
+    }
+}

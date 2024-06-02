@@ -71,3 +71,16 @@ public static List<Row> combineSections(Map<String, List<Row>> sectionMap, Map<S
     }
     return combinedRows;
 }
+public static StructType createUnifiedSchema(Map<String, StructType> sectionSchemas) {
+    List<StructField> fields = new ArrayList<>();
+    for (Map.Entry<String, StructType> entry : sectionSchemas.entrySet()) {
+        String sectionKey = entry.getKey();
+        StructType schema = entry.getValue();
+        for (StructField field : schema.fields()) {
+            // Append section identifier as prefix to field name to ensure uniqueness
+            String fieldName = sectionKey + "_" + field.name();
+            fields.add(new StructField(fieldName, field.dataType(), field.nullable(), field.metadata()));
+        }
+    }
+    return DataTypes.createStructType(fields);
+}

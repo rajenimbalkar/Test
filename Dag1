@@ -1,0 +1,84 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.sftp.hooks.sftp import SFTPHook
+from airflow.providers.ssh.hooks.ssh import SSHHook
+from airflow.models import Variable
+from datetime import datetime, timedelta
+import os
+
+# Define the default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2023, 1, 1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# Define the DAG
+with DAG(
+    'secure_sftp_to_spark',
+    default_args=default_args,
+    description='Secure DAG to process files from SFTP to Spark',
+    schedule_interval=timedelta(minutes=15),
+    catchup=False,
+) as dag:
+
+    def list_files_from_sftp(sftp_conn_id, remote_path):
+        sftp_hook = SFTPHook(sftp_conn_id=sftp_conn_id)
+        files = sftp_hook.list_directory(remote_path)
+        return [os.path.join(remote_path, file) for file in files]
+
+    def process_file_with_spark(sftp_conn_id, ssh_conn_id, remote_file_path, spark_script):
+        sftp_hook = SFTPHook(sftp_conn_id=sftp_conn_id)
+        ssh_hook = SSHHook(ssh_conn_id=ssh_conn_id)
+
+        local_file_path = os.path.join('/tmp', os.path.basename(remote_file_path))
+        sftp_hook.retrieve_file(remote_file_path, local_file_path)
+
+        # Command to run Spark job
+        command = f"spark-submit {spark_script} {local_file_path}"
+        ssh_client = ssh_hook.get_conn()
+        stdin, stdout, stderr = ssh_client.exec_command(command)
+
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            raise Exception(f"Spark job failed: {stderr.read().decode()}")
+
+        sftp_hook.delete_file(remote_file_path)
+
+    def get_task_id_from_filename(filename):
+        return 'process_' + os.path.basename(filename).replace('.', '_')
+
+    # List files from SFTP
+    list_files_task = PythonOperator(
+        task_id='list_files',
+        python_callable=list_files_from_sftp,
+        op_kwargs={'sftp_conn_id': 'my_sftp', 'remote_path': '/path/to/sftp/folder'},
+    )
+
+    # Dynamically create tasks for each file
+    def create_dynamic_tasks(file_list):
+        for file_path in file_list:
+            task_id = get_task_id_from_filename(file_path)
+            task = PythonOperator(
+                task_id=task_id,
+                python_callable=process_file_with_spark,
+                op_kwargs={
+                    'sftp_conn_id': 'my_sftp',
+                    'ssh_conn_id': 'my_ssh',
+                    'remote_file_path': file_path,
+                    'spark_script': '/path/to/spark_script.py',
+                },
+            )
+            list_files_task >> task
+
+    dynamic_tasks = PythonOperator(
+        task_id='create_dynamic_tasks',
+        python_callable=create_dynamic_tasks,
+        op_args=[list_files_task.output],
+    )
+
+    list_files_task >> dynamic_tasks

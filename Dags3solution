@@ -1,0 +1,185 @@
+To modify the previous example to use an S3 bucket instead of local storage for file handling in Apache Airflow, you’ll need to:
+
+1. Download files from SFTP to a local temporary directory.
+2. Upload these files to an S3 bucket.
+3. Invoke the Apache Spark job with the S3 file paths.
+4. Use Airflow's S3 connection for secure file handling.
+
+### Prerequisites
+
+1. **AWS S3**: Accessible from your Airflow environment.
+2. **AWS SDK (`boto3`)**: Installed in your Airflow environment.
+
+### Step-by-Step Implementation
+
+### Step 1: Install Necessary Packages
+
+Ensure you have `boto3` and the Airflow S3 provider installed:
+
+```bash
+pip install boto3
+pip install apache-airflow-providers-amazon
+```
+
+### Step 2: Configure Airflow Connections
+
+1. **SFTP Connection** (`my_sftp`):
+   - Set up as described previously.
+
+2. **AWS Connection** (`aws_s3`):
+   - In the Airflow UI, go to **Admin** -> **Connections** -> **+** (Add a new connection).
+   - **Conn Id**: `aws_s3`
+   - **Conn Type**: `Amazon Web Services`
+   - **Login**: `AWS_ACCESS_KEY_ID`
+   - **Password**: `AWS_SECRET_ACCESS_KEY`
+   - **Extra**: `{"region_name": "your-region", "aws_session_token": "your-session-token-if-needed"}`
+
+### Step 3: Create the DAG
+
+#### `sftp_to_spark_s3_dag.py`
+
+```python
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.sftp.hooks.sftp import SFTPHook
+from airflow.providers.ssh.hooks.ssh import SSHHook
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.models import Variable
+from datetime import datetime, timedelta
+import os
+
+# Define the default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2023, 1, 1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# Define the DAG
+with DAG(
+    'sftp_to_spark_s3',
+    default_args=default_args,
+    description='DAG to process files from SFTP to Spark using S3',
+    schedule_interval=timedelta(minutes=15),
+    catchup=False,
+) as dag:
+
+    def list_files_from_sftp(sftp_conn_id, remote_path):
+        sftp_hook = SFTPHook(sftp_conn_id=sftp_conn_id)
+        files = sftp_hook.list_directory(remote_path)
+        return [os.path.join(remote_path, file) for file in files]
+
+    def upload_to_s3(sftp_conn_id, aws_conn_id, remote_file_path, bucket_name, s3_key_prefix):
+        sftp_hook = SFTPHook(sftp_conn_id=sftp_conn_id)
+        s3_hook = S3Hook(aws_conn_id=aws_conn_id)
+
+        local_file_path = os.path.join('/tmp', os.path.basename(remote_file_path))
+        sftp_hook.retrieve_file(remote_file_path, local_file_path)
+
+        s3_key = os.path.join(s3_key_prefix, os.path.basename(remote_file_path))
+        s3_hook.load_file(local_file_path, key=s3_key, bucket_name=bucket_name, replace=True)
+        os.remove(local_file_path)  # Clean up local file
+
+        return s3_key
+
+    def process_file_with_spark(aws_conn_id, ssh_conn_id, s3_file_path, spark_script):
+        ssh_hook = SSHHook(ssh_conn_id=ssh_conn_id)
+        command = f"spark-submit {spark_script} {s3_file_path}"
+
+        ssh_client = ssh_hook.get_conn()
+        stdin, stdout, stderr = ssh_client.exec_command(command)
+
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            raise Exception(f"Spark job failed: {stderr.read().decode()}")
+
+    def get_task_id_from_filename(filename):
+        return 'process_' + os.path.basename(filename).replace('.', '_')
+
+    # List files from SFTP
+    list_files_task = PythonOperator(
+        task_id='list_files',
+        python_callable=list_files_from_sftp,
+        op_kwargs={'sftp_conn_id': 'my_sftp', 'remote_path': '/path/to/sftp/folder'},
+    )
+
+    # Dynamically create tasks for each file
+    def create_dynamic_tasks(file_list):
+        for file_path in file_list:
+            task_id = get_task_id_from_filename(file_path)
+            upload_task = PythonOperator(
+                task_id=f'upload_{task_id}',
+                python_callable=upload_to_s3,
+                op_kwargs={
+                    'sftp_conn_id': 'my_sftp',
+                    'aws_conn_id': 'aws_s3',
+                    'remote_file_path': file_path,
+                    'bucket_name': 'your-s3-bucket',
+                    's3_key_prefix': 'spark/input'
+                },
+            )
+
+            spark_task = PythonOperator(
+                task_id=task_id,
+                python_callable=process_file_with_spark,
+                op_kwargs={
+                    'aws_conn_id': 'aws_s3',
+                    'ssh_conn_id': 'my_ssh',
+                    's3_file_path': f's3://your-s3-bucket/spark/input/{os.path.basename(file_path)}',
+                    'spark_script': '/path/to/spark_script.py',
+                },
+            )
+
+            list_files_task >> upload_task >> spark_task
+
+    dynamic_tasks = PythonOperator(
+        task_id='create_dynamic_tasks',
+        python_callable=create_dynamic_tasks,
+        op_args=[list_files_task.output],
+    )
+
+    list_files_task >> dynamic_tasks
+```
+
+### Step 4: Store AWS Credentials Securely
+
+1. **Airflow Variables**: Store paths or bucket names if they need to be dynamic or sensitive.
+2. **Environment Variables**: Use environment variables to store AWS credentials securely.
+
+### Example Environment Variable Setup
+
+```bash
+export AWS_ACCESS_KEY_ID='your-access-key-id'
+export AWS_SECRET_ACCESS_KEY='your-secret-access-key'
+export AWS_DEFAULT_REGION='your-region'
+```
+
+### Accessing Environment Variables in the DAG
+
+```python
+import os
+
+aws_access_key_id = os.environ.get('AWS_ACCESS_KEY_ID')
+aws_secret_access_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+```
+
+### Security Recommendations
+
+- **Use IAM Roles**: If running on AWS, use IAM roles for EC2 or ECS tasks instead of static credentials.
+- **Encrypt Sensitive Data**: Use AWS KMS to encrypt sensitive data.
+- **Use Environment Isolation**: Separate development, staging, and production environments to reduce risk.
+
+### Summary
+
+By updating the example DAG to handle S3 storage, we:
+
+1. **Download files from SFTP**: to a local temporary directory.
+2. **Upload files to S3**: using Airflow's `S3Hook`.
+3. **Invoke Spark jobs with S3 paths**: by passing S3 file paths to the Spark job.
+4. **Securely manage connections and credentials**: using Airflow's secure connection management and environment variables.
+
+This setup integrates S3 as the intermediary storage for file handling, which is useful for scalable and distributed data processing workflows.

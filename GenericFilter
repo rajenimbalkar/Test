@@ -7,68 +7,63 @@ import org.apache.spark.sql.functions;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
-public class GenericFilter {
-
-    private SparkSession spark;
-
-    public GenericFilter(SparkSession spark) {
-        this.spark = spark;
-    }
+public class DatasetFilter {
 
     /**
-     * Apply multiple `isin` filters on a Dataset<Row> based on provided column-value mappings.
-     * Ignores keys that are not present as columns in the Dataset.
+     * Apply filters to a Dataset<Row> based on a list of maps with conditions combined using AND.
      *
-     * @param df           The input Dataset<Row>.
-     * @param filtersMap   A map of column names to lists of values to filter by.
-     * @return             The filtered Dataset<Row>.
+     * @param df            The input Dataset<Row>.
+     * @param filterConditions A list of maps where each map contains column names and their respective filter values.
+     * @return              The filtered Dataset<Row>.
      */
-    public Dataset<Row> applyFilters(Dataset<Row> df, Map<String, List<Object>> filtersMap) {
+    public static Dataset<Row> applyFilters(Dataset<Row> df, List<Map<String, Object>> filterConditions) {
         // Get the set of columns in the dataset
         Set<String> columns = Set.of(df.columns());
 
-        // Create a condition for each entry in the filtersMap if the column exists
-        Column condition = null;
+        Column combinedCondition = null;
 
-        for (Map.Entry<String, List<Object>> entry : filtersMap.entrySet()) {
-            String column = entry.getKey();
+        // Iterate through each map of filter conditions
+        for (Map<String, Object> conditions : filterConditions) {
+            for (Map.Entry<String, Object> entry : conditions.entrySet()) {
+                String column = entry.getKey();
+                Object value = entry.getValue();
 
-            // Skip if column is not in the dataset
-            if (!columns.contains(column)) {
-                System.out.println("Ignoring non-existent column: " + column);
-                continue;
-            }
+                // Skip if column is not in the dataset
+                if (!columns.contains(column)) {
+                    System.out.println("Ignoring non-existent column: " + column);
+                    continue;
+                }
 
-            List<Object> values = entry.getValue();
-            Column currentCondition = df.col(column).isin(values.toArray());
+                // Create a condition for the current column and value
+                Column currentCondition = df.col(column).equalTo(value);
 
-            if (condition == null) {
-                condition = currentCondition;
-            } else {
-                // Combine conditions with logical AND
-                condition = condition.and(currentCondition);
+                // Combine with the existing conditions using AND
+                if (combinedCondition == null) {
+                    combinedCondition = currentCondition;
+                } else {
+                    combinedCondition = combinedCondition.and(currentCondition);
+                }
             }
         }
 
-        if (condition != null) {
+        if (combinedCondition != null) {
             // Apply the combined condition
-            return df.filter(functions.not(condition));
+            return df.filter(combinedCondition);
         }
 
-        // Return original dataset if no condition was applied
+        // Return original dataset if no valid condition was applied
         return df;
     }
 
     public static void main(String[] args) {
         // Initialize Spark Session
         SparkSession spark = SparkSession.builder()
-                .appName("Generic Filter Example")
+                .appName("Dataset Filter Example")
                 .master("local[*]")
                 .getOrCreate();
 
-        // Create sample data
+        // Sample data
         List<Row> data = Arrays.asList(
                 RowFactory.create("Alice", 29, "USA"),
                 RowFactory.create("Bob", 35, "Canada"),
@@ -94,18 +89,14 @@ public class GenericFilter {
         System.out.println("Initial Data:");
         df.show();
 
-        // Define filters
-        Map<String, List<Object>> filtersMap = Map.of(
-                "country", Arrays.asList("USA", "Canada"),
-                "age", Arrays.asList(28, 29),
-                "nonExistentColumn", Arrays.asList("value1", "value2")
+        // Define filter conditions
+        List<Map<String, Object>> filterConditions = Arrays.asList(
+                Map.of("country", "USA"),
+                Map.of("age", 28)
         );
 
-        // Create an instance of the GenericFilter class
-        GenericFilter genericFilter = new GenericFilter(spark);
-
         // Apply filters
-        Dataset<Row> filteredDf = genericFilter.applyFilters(df, filtersMap);
+        Dataset<Row> filteredDf = applyFilters(df, filterConditions);
 
         // Show filtered data
         System.out.println("Filtered Data:");

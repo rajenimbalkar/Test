@@ -6,6 +6,7 @@ import org.apache.spark.sql.functions;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class GenericFilter {
@@ -18,19 +19,29 @@ public class GenericFilter {
 
     /**
      * Apply multiple `isin` filters on a Dataset<Row> based on provided column-value mappings.
+     * Ignores keys that are not present as columns in the Dataset.
      *
      * @param df           The input Dataset<Row>.
      * @param filtersMap   A map of column names to lists of values to filter by.
      * @return             The filtered Dataset<Row>.
      */
     public Dataset<Row> applyFilters(Dataset<Row> df, Map<String, List<Object>> filtersMap) {
-        // Create a condition for each entry in the filtersMap
+        // Get the set of columns in the dataset
+        Set<String> columns = Set.of(df.columns());
+
+        // Create a condition for each entry in the filtersMap if the column exists
         Column condition = null;
 
         for (Map.Entry<String, List<Object>> entry : filtersMap.entrySet()) {
             String column = entry.getKey();
-            List<Object> values = entry.getValue();
 
+            // Skip if column is not in the dataset
+            if (!columns.contains(column)) {
+                System.out.println("Ignoring non-existent column: " + column);
+                continue;
+            }
+
+            List<Object> values = entry.getValue();
             Column currentCondition = df.col(column).isin(values.toArray());
 
             if (condition == null) {
@@ -86,7 +97,8 @@ public class GenericFilter {
         // Define filters
         Map<String, List<Object>> filtersMap = Map.of(
                 "country", Arrays.asList("USA", "Canada"),
-                "age", Arrays.asList(28, 29)
+                "age", Arrays.asList(28, 29),
+                "nonExistentColumn", Arrays.asList("value1", "value2")
         );
 
         // Create an instance of the GenericFilter class

@@ -1,0 +1,50 @@
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) {
+        // Sample data
+        Map<String, List<Map<String, Object>>> data = new HashMap<>();
+
+        List<Map<String, Object>> list1 = new ArrayList<>();
+        list1.add(new HashMap<String, Object>() {{ put("key1", 10); put("key2", 20); }});
+        list1.add(new HashMap<String, Object>() {{ put("key1", 30); put("key2", 40); }});
+
+        List<Map<String, Object>> list2 = new ArrayList<>();
+        list2.add(new HashMap<String, Object>() {{ put("key1", 50); put("key3", 60); }});
+        list2.add(new HashMap<String, Object>() {{ put("key2", 70); put("key3", 80); }});
+
+        data.put("list1", list1);
+        data.put("list2", list2);
+
+        // Process the map
+        processMap(data, "key1");
+    }
+
+    public static void processMap(Map<String, List<Map<String, Object>>> data, String key) {
+        // Initialize sum and count
+        int totalSum = 0;
+        int keyCount = 0;
+
+        // Iterate through the map
+        for (Map.Entry<String, List<Map<String, Object>>> entry : data.entrySet()) {
+            List<Map<String, Object>> listOfMaps = entry.getValue();
+
+            // Iterate through the list of maps
+            for (Map<String, Object> map : listOfMaps) {
+                if (map.containsKey(key)) {
+                    Object value = map.get(key);
+
+                    // Check if the value is an integer
+                    if (value instanceof Integer) {
+                        totalSum += (Integer) value;
+                        keyCount++;
+                    }
+                }
+            }
+        }
+
+        // Print the results
+        System.out.println("Total sum of values for key '" + key + "': " + totalSum);
+        System.out.println("Total count of key '" + key + "': " + keyCount);
+    }
+}

@@ -1,0 +1,207 @@
+To accumulate validation errors in Apache Spark using an accumulator, you can follow these steps:
+
+1. **Create a custom accumulator for validation errors.**
+2. **Modify the validation logic to use the accumulator.**
+3. **Display or log the accumulated errors after the validation process.**
+
+### Step 1: Create a Custom Accumulator for Validation Errors
+
+First, define a custom accumulator to collect validation errors. You can use a `ListAccumulator` to collect error messages.
+
+#### Custom Accumulator
+
+```java
+import org.apache.spark.util.AccumulatorV2;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class ValidationErrorAccumulator extends AccumulatorV2<String, List<String>> {
+
+    private List<String> errors = new ArrayList<>();
+
+    @Override
+    public boolean isZero() {
+        return errors.isEmpty();
+    }
+
+    @Override
+    public AccumulatorV2<String, List<String>> copy() {
+        ValidationErrorAccumulator newAcc = new ValidationErrorAccumulator();
+        newAcc.errors.addAll(this.errors);
+        return newAcc;
+    }
+
+    @Override
+    public void reset() {
+        errors.clear();
+    }
+
+    @Override
+    public void add(String v) {
+        errors.add(v);
+    }
+
+    @Override
+    public void merge(AccumulatorV2<String, List<String>> other) {
+        errors.addAll(other.value());
+    }
+
+    @Override
+    public List<String> value() {
+        return errors;
+    }
+}
+```
+
+### Step 2: Modify the Validation Logic to Use the Accumulator
+
+Modify your validation logic to add errors to the accumulator whenever a validation rule fails.
+
+#### Updated Validator Class
+
+```java
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.List;
+import java.util.Map;
+
+public class Validator {
+
+    private final Map<String, List<Map<String, Object>>> config;
+    private ValidationErrorAccumulator accumulator;
+
+    public Validator(Map<String, List<Map<String, Object>>> config, ValidationErrorAccumulator accumulator) {
+        this.config = config;
+        this.accumulator = accumulator;
+    }
+
+    public boolean validateRow(String line, String fileType, long rowIndex) {
+        List<Map<String, Object>> rules = config.get(fileType);
+        boolean isValid = true;
+
+        for (Map<String, Object> rule : rules) {
+            String recordType = (String) rule.get("recordType");
+            int position = (int) rule.get("position");
+            int length = (int) rule.get("length");
+
+            if ("header".equals(recordType) || "trailer".equals(recordType)) {
+                String expectedValue = (String) rule.get("value");
+                String actualValue = line.substring(position, position + length);
+                if (!expectedValue.equals(actualValue)) {
+                    accumulator.add("Row " + rowIndex + ": Expected " + expectedValue + " but found " + actualValue);
+                    isValid = false;
+                }
+            } else if ("data".equals(recordType)) {
+                List<Map<String, Object>> fields = (List<Map<String, Object>>) rule.get("fields");
+                for (Map<String, Object> field : fields) {
+                    String type = (String) field.get("type");
+                    position = (int) field.get("position");
+                    length = (int) field.get("length");
+                    String value = line.substring(position, position + length).trim();
+
+                    if ("mandatory".equals(type) && value.isEmpty()) {
+                        accumulator.add("Row " + rowIndex + ": Mandatory field is empty at position " + position);
+                        isValid = false;
+                    } else if ("date".equals(type)) {
+                        String format = (String) field.get("format");
+                        if (!isValidDate(value, format)) {
+                            accumulator.add("Row " + rowIndex + ": Invalid date format at position " + position + ". Expected format: " + format);
+                            isValid = false;
+                        }
+                    } else if ("numeric".equals(type)) {
+                        if (!value.matches("\\d+")) {
+                            accumulator.add("Row " + rowIndex + ": Non-numeric value at position " + position);
+                            isValid = false;
+                        }
+                    }
+                }
+            }
+        }
+        return isValid;
+    }
+
+    private boolean isValidDate(String date, String format) {
+        SimpleDateFormat sdf = new SimpleDateFormat(format);
+        sdf.setLenient(false);
+        try {
+            sdf.parse(date);
+            return true;
+        } catch (ParseException e) {
+            return false;
+        }
+    }
+}
+```
+
+### Step 3: Display or Log the Accumulated Errors After Validation
+
+Integrate the custom accumulator into your Spark application, perform validations, and display the accumulated errors.
+
+#### Updated Main Class
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.util.LongAccumulator;
+
+import java.util.List;
+import java.util.Map;
+
+public class PositionalFileValidator {
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+            .appName("Positional File Validator")
+            .getOrCreate();
+
+        String filePath = "path/to/your/positional/file.txt";
+        String configFileName = "/validation-rules.yaml";
+        String fileType = "fileType1";
+
+        // Load validation config
+        Map<String, List<Map<String, Object>>> config = ValidationConfig.loadConfig(configFileName);
+
+        // Load the positional flat file
+        Dataset<Row> data = PositionalFileProcessor.loadFile(spark, filePath);
+
+        // Create the custom accumulator for validation errors
+        ValidationErrorAccumulator validationErrorAccumulator = new ValidationErrorAccumulator();
+        spark.sparkContext().register(validationErrorAccumulator, "ValidationErrors");
+
+        // Validate each row based on the rules
+        Validator validator = new Validator(config, validationErrorAccumulator);
+
+        data.foreachPartition(rows -> {
+            long rowIndex = 0;
+            while (rows.hasNext()) {
+                Row row = rows.next();
+                validator.validateRow(row.getString(0), fileType, rowIndex);
+                rowIndex++;
+            }
+        });
+
+        // Display the accumulated errors
+        List<String> errors = validationErrorAccumulator.value();
+        if (!errors.isEmpty()) {
+            System.out.println("Validation Errors:");
+            for (String error : errors) {
+                System.out.println(error);
+            }
+        } else {
+            System.out.println("All rows are valid.");
+        }
+
+        spark.stop();
+    }
+}
+```
+
+### Explanation
+
+1. **Custom Accumulator**: Define a custom accumulator (`ValidationErrorAccumulator`) to collect validation errors.
+2. **Validator**: Update the `Validator` class to accept the accumulator and add error messages to it whenever a validation rule fails.
+3. **Main Application**: Register the custom accumulator with Spark, perform row validation, and display accumulated errors after processing.
+
+This approach ensures that all validation errors are collected in a distributed manner across Spark executors and can be accessed and displayed after the validation process is complete.

@@ -1,0 +1,176 @@
+Creating an Apache Airflow DAG that reads files from an S3 bucket, processes them with a Spark job, updates a database, and handles errors with retries and email notifications involves several components. Below is an example of how to set up this pipeline, including Airflow configurations, Spark submit, S3 interactions, database updates, and error handling.
+
+### Prerequisites
+- Apache Airflow installed and configured.
+- AWS S3 access configured via Airflow's S3Hook.
+- A Spark cluster accessible via Airflow.
+- A database accessible via Airflow.
+- An email server configured in Airflow for notifications.
+
+### Airflow Configuration
+1. **Airflow Connections**:
+   - S3 connection (aws_default)
+   - Spark connection (spark_default)
+   - Database connection (db_default)
+   - SMTP connection for email (smtp_default)
+
+2. **Airflow Variables**:
+   - `s3_bucket`: The name of the S3 bucket.
+   - `input_folder`: The S3 folder with input files.
+   - `processed_folder`: The S3 folder to move processed files.
+   - `spark_submit_path`: The path to the Spark submit binary.
+   - `spark_jar`: The path to the Spark job jar file.
+   - `spark_main_class`: The main class of the Spark job.
+
+### DAG Code
+
+```python
+from datetime import datetime, timedelta
+import os
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.operators.email_operator import EmailOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.hooks.base_hook import BaseHook
+import boto3
+import psycopg2
+
+# Default arguments
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'email': ['your_email@example.com'],
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# DAG definition
+dag = DAG(
+    's3_to_spark_to_db',
+    default_args=default_args,
+    description='A pipeline to process files from S3 with Spark and update a database',
+    schedule_interval=timedelta(days=1),
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
+    max_active_runs=1,
+)
+
+s3_bucket = Variable.get("s3_bucket")
+input_folder = Variable.get("input_folder")
+processed_folder = Variable.get("processed_folder")
+spark_submit_path = Variable.get("spark_submit_path")
+spark_jar = Variable.get("spark_jar")
+spark_main_class = Variable.get("spark_main_class")
+
+def list_files(**kwargs):
+    s3 = S3Hook('aws_default')
+    files = s3.list_keys(bucket_name=s3_bucket, prefix=input_folder)
+    if not files:
+        raise ValueError("No files found in input folder.")
+    return files
+
+def process_file(file_key):
+    s3 = S3Hook('aws_default')
+    s3_conn = s3.get_conn()
+    bucket = s3_conn.Bucket(s3_bucket)
+    
+    # Download the file
+    file_path = os.path.join('/tmp', os.path.basename(file_key))
+    bucket.download_file(file_key, file_path)
+    
+    # Spark submit task
+    spark_task = SparkSubmitOperator(
+        task_id='spark_submit_' + os.path.basename(file_key),
+        application=spark_jar,
+        conn_id='spark_default',
+        java_class=spark_main_class,
+        application_args=[file_path],
+        dag=dag
+    )
+    
+    # Execute the Spark job
+    spark_task.execute(context={})
+    
+    # Update database
+    db_conn = BaseHook.get_connection('db_default')
+    conn = psycopg2.connect(
+        dbname=db_conn.schema,
+        user=db_conn.login,
+        password=db_conn.password,
+        host=db_conn.host,
+        port=db_conn.port
+    )
+    cursor = conn.cursor()
+    insert_query = "INSERT INTO processed_files (file_name, processed_at) VALUES (%s, %s)"
+    cursor.execute(insert_query, (os.path.basename(file_key), datetime.now()))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    # Move the file to the processed folder
+    new_key = file_key.replace(input_folder, processed_folder)
+    bucket.copy({'Bucket': s3_bucket, 'Key': file_key}, new_key)
+    bucket.delete_objects(Delete={'Objects': [{'Key': file_key}]})
+
+def process_files(**kwargs):
+    files = kwargs['ti'].xcom_pull(task_ids='list_files')
+    if not files:
+        raise ValueError("No files to process.")
+    
+    for file_key in files:
+        process_file(file_key)
+
+list_files_task = PythonOperator(
+    task_id='list_files',
+    python_callable=list_files,
+    provide_context=True,
+    dag=dag
+)
+
+process_files_task = PythonOperator(
+    task_id='process_files',
+    python_callable=process_files,
+    provide_context=True,
+    dag=dag
+)
+
+send_failure_email = EmailOperator(
+    task_id='send_failure_email',
+    to=['your_email@example.com'],
+    subject='Airflow DAG Failure: s3_to_spark_to_db',
+    html_content='The DAG "s3_to_spark_to_db" has failed.',
+    trigger_rule='one_failed',
+    dag=dag
+)
+
+list_files_task >> process_files_task
+process_files_task >> send_failure_email
+```
+
+### Explanation
+
+1. **DAG Configuration**: Sets up the DAG with retry logic and email notification on failure.
+
+2. **S3 Operations**:
+   - **list_files**: Lists all files in the S3 input folder.
+   - **process_file**: Downloads each file, submits it to Spark, updates the database, and moves the file to the processed folder.
+
+3. **Spark Submit**: Uses the `SparkSubmitOperator` to submit a Spark job for each file.
+
+4. **Database Update**: Inserts a record into the database for each processed file.
+
+5. **Error Handling**: Configures retries and sends an email if any task fails.
+
+6. **Task Dependencies**: Ensures that tasks run in the correct order, and the email is sent only if a failure occurs.
+
+### Configuration
+
+Ensure that your Airflow environment has the necessary connections and variables set up. You can configure these in the Airflow UI under the Admin menu:
+
+- **Connections**: Add connections for `aws_default`, `spark_default`, `db_default`, and `smtp_default`.
+- **Variables**: Add variables for `s3_bucket`, `input_folder`, `processed_folder`, `spark_submit_path`, `spark_jar`, and `spark_main_class`.
+
+This setup should provide a resilient and retryable Airflow DAG that processes files from S3, runs a Spark job, updates a database, and handles failures with email notifications.

@@ -1,0 +1,249 @@
+To perform dataset row validation where each row is a positional flat file with positional fields, you can use Apache Spark to read and process the file, applying validation rules to ensure that the header row and trailer row appear once per set and that specific positional fields meet the required criteria. Here's how you can achieve this with configurable validation rules, using a combination of YAML for rule configuration and Spark for data processing in Java.
+
+### Steps to Implement Dataset Row Validation
+
+1. **Define Validation Rules in YAML**
+2. **Read and Parse the YAML Configuration**
+3. **Load and Process the Positional Flat File**
+4. **Apply Validation Rules**
+5. **Validate Header and Trailer Rows**
+6. **Validate Specific Positional Fields**
+
+### 1. Define Validation Rules in YAML
+
+Define your validation rules in a YAML file, specifying the record type, field positions, and validation criteria.
+
+```yaml
+fileType1:
+  - recordType: "header"
+    position: 0
+    length: 5
+    value: "HDR"
+  - recordType: "data"
+    fields:
+      - name: "dateField"
+        position: 10
+        length: 8
+        type: "date"
+        format: "yyyyMMdd"
+      - name: "mandatoryField"
+        position: 20
+        length: 5
+        type: "mandatory"
+  - recordType: "trailer"
+    position: 0
+    length: 5
+    value: "TRL"
+
+fileType2:
+  - recordType: "header"
+    position: 0
+    length: 3
+    value: "H1"
+  - recordType: "data"
+    fields:
+      - name: "amountField"
+        position: 15
+        length: 10
+        type: "numeric"
+      - name: "optionalField"
+        position: 25
+        length: 5
+        type: "optional"
+  - recordType: "trailer"
+    position: 0
+    length: 3
+    value: "T1"
+```
+
+### 2. Read and Parse the YAML Configuration
+
+Use a library like SnakeYAML to read and parse the YAML configuration in Java.
+
+```java
+import org.yaml.snakeyaml.Yaml;
+
+import java.io.InputStream;
+import java.util.List;
+import java.util.Map;
+
+public class ValidationConfig {
+
+    public static Map<String, List<Map<String, Object>>> loadConfig(String fileName) {
+        Yaml yaml = new Yaml();
+        try (InputStream in = ValidationConfig.class.getResourceAsStream(fileName)) {
+            return yaml.load(in);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load validation config", e);
+        }
+    }
+}
+```
+
+### 3. Load and Process the Positional Flat File
+
+Use Spark to load and process the positional flat file.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class PositionalFileProcessor {
+
+    public static Dataset<Row> loadFile(SparkSession spark, String filePath) {
+        return spark.read().text(filePath).toDF("line");
+    }
+}
+```
+
+### 4. Apply Validation Rules
+
+Create a class to apply validation rules to each row.
+
+```java
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.List;
+import java.util.Map;
+
+public class Validator {
+
+    private final Map<String, List<Map<String, Object>>> config;
+
+    public Validator(Map<String, List<Map<String, Object>>> config) {
+        this.config = config;
+    }
+
+    public boolean validateRow(String line, String fileType) {
+        List<Map<String, Object>> rules = config.get(fileType);
+        for (Map<String, Object> rule : rules) {
+            String recordType = (String) rule.get("recordType");
+            int position = (int) rule.get("position");
+            int length = (int) rule.get("length");
+
+            if ("header".equals(recordType) || "trailer".equals(recordType)) {
+                String expectedValue = (String) rule.get("value");
+                String actualValue = line.substring(position, position + length);
+                if (!expectedValue.equals(actualValue)) {
+                    return false;
+                }
+            } else if ("data".equals(recordType)) {
+                List<Map<String, Object>> fields = (List<Map<String, Object>>) rule.get("fields");
+                for (Map<String, Object> field : fields) {
+                    String type = (String) field.get("type");
+                    position = (int) field.get("position");
+                    length = (int) field.get("length");
+                    String value = line.substring(position, position + length).trim();
+
+                    if ("mandatory".equals(type) && value.isEmpty()) {
+                        return false;
+                    } else if ("date".equals(type)) {
+                        String format = (String) field.get("format");
+                        if (!isValidDate(value, format)) {
+                            return false;
+                        }
+                    } else if ("numeric".equals(type)) {
+                        if (!value.matches("\\d+")) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    private boolean isValidDate(String date, String format) {
+        SimpleDateFormat sdf = new SimpleDateFormat(format);
+        sdf.setLenient(false);
+        try {
+            sdf.parse(date);
+            return true;
+        } catch (ParseException e) {
+            return false;
+        }
+    }
+}
+```
+
+### 5. Validate Header and Trailer Rows
+
+Create a method to ensure the header and trailer rows appear once per set.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+
+import java.util.List;
+
+public class HeaderTrailerValidator {
+
+    public static boolean validateHeaderTrailer(Dataset<Row> data, String fileType, Map<String, List<Map<String, Object>>> config) {
+        Validator validator = new Validator(config);
+        long headerCount = data.filter(row -> validator.validateRow(row.getString(0), fileType)).count();
+        long trailerCount = data.filter(row -> validator.validateRow(row.getString(0), fileType)).count();
+        return headerCount == 1 && trailerCount == 1;
+    }
+}
+```
+
+### 6. Validate Specific Positional Fields
+
+Apply the validation logic to specific positional fields.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class PositionalFileValidator {
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+            .appName("Positional File Validator")
+            .getOrCreate();
+
+        String filePath = "path/to/your/positional/file.txt";
+        String configFileName = "/validation-rules.yaml";
+        String fileType = "fileType1";
+
+        // Load validation config
+        Map<String, List<Map<String, Object>>> config = ValidationConfig.loadConfig(configFileName);
+
+        // Load the positional flat file
+        Dataset<Row> data = PositionalFileProcessor.loadFile(spark, filePath);
+
+        // Validate header and trailer rows
+        boolean isHeaderTrailerValid = HeaderTrailerValidator.validateHeaderTrailer(data, fileType, config);
+        if (!isHeaderTrailerValid) {
+            System.out.println("Header or Trailer validation failed.");
+            return;
+        }
+
+        // Validate each row based on the rules
+        Validator validator = new Validator(config);
+        Dataset<Row> invalidRows = data.filter(row -> !validator.validateRow(row.getString(0), fileType));
+        long invalidCount = invalidRows.count();
+        if (invalidCount > 0) {
+            System.out.println("Data validation failed. Invalid rows count: " + invalidCount);
+            invalidRows.show();
+        } else {
+            System.out.println("All rows are valid.");
+        }
+
+        spark.stop();
+    }
+}
+```
+
+### Explanation
+
+1. **Define Validation Rules in YAML**: Define the validation rules for each file type, specifying record types and fields to be validated.
+2. **Read and Parse the YAML Configuration**: Use SnakeYAML to load the validation rules from a YAML file.
+3. **Load and Process the Positional Flat File**: Use Spark to load the positional flat file as a dataset.
+4. **Apply Validation Rules**: Implement a validator to apply the validation rules to each row.
+5. **Validate Header and Trailer Rows**: Ensure that the header and trailer rows appear exactly once per set.
+6. **Validate Specific Positional Fields**: Apply specific validation rules to positional fields, checking for mandatory values, date formats, and numeric fields.
+
+This setup allows you to validate each row of a positional flat file based on configurable rules defined in a YAML file, ensuring flexibility and maintainability.

@@ -1,0 +1,210 @@
+Using a connection pool with Apache Spark and JDBC can significantly improve the performance and resource management of your application. One of the most popular connection pools for Java is HikariCP. Here’s how you can integrate HikariCP with your Spark application to maintain transactions and securely manage database connections.
+
+### Steps to Use HikariCP with Apache Spark
+
+1. **Add HikariCP Dependency**
+2. **Configure HikariCP**
+3. **Update Singleton to Use HikariCP**
+4. **Perform Database Operations Using the Connection Pool**
+
+### 1. Add HikariCP Dependency
+
+First, add the HikariCP dependency to your project. If you are using Maven, add the following to your `pom.xml`:
+
+```xml
+<dependency>
+    <groupId>com.zaxxer</groupId>
+    <artifactId>HikariCP</artifactId>
+    <version>5.0.1</version>
+</dependency>
+```
+
+### 2. Configure HikariCP
+
+Create a HikariCP configuration class:
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
+public class HikariCPDataSource {
+
+    private static HikariCPDataSource instance;
+    private HikariDataSource dataSource;
+
+    private HikariCPDataSource() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(System.getenv("DB_URL"));
+        config.setUsername(System.getenv("DB_USER"));
+        config.setPassword(System.getenv("DB_PASSWORD"));
+        config.setMaximumPoolSize(10);
+        config.setMinimumIdle(2);
+        config.setIdleTimeout(30000);
+        config.setConnectionTimeout(30000);
+        config.setMaxLifetime(1800000);
+        config.setAutoCommit(false);  // Ensure transactions are managed manually
+        dataSource = new HikariDataSource(config);
+    }
+
+    public static HikariCPDataSource getInstance() {
+        if (instance == null) {
+            instance = new HikariCPDataSource();
+        }
+        return instance;
+    }
+
+    public HikariDataSource getDataSource() {
+        return dataSource;
+    }
+}
+```
+
+### 3. Update Singleton to Use HikariCP
+
+Modify your `DatabaseConnection` class to use HikariCP:
+
+```java
+import java.sql.Connection;
+import java.sql.SQLException;
+
+public class DatabaseConnection {
+
+    private static DatabaseConnection instance;
+    private HikariCPDataSource hikariCPDataSource;
+
+    private DatabaseConnection() {
+        hikariCPDataSource = HikariCPDataSource.getInstance();
+    }
+
+    public static DatabaseConnection getInstance() {
+        if (instance == null) {
+            instance = new DatabaseConnection();
+        }
+        return instance;
+    }
+
+    public Connection getConnection() throws SQLException {
+        return hikariCPDataSource.getDataSource().getConnection();
+    }
+}
+```
+
+### 4. Perform Database Operations Using the Connection Pool
+
+Now you can perform database operations using the connection pool. Here's how you can update the `DataInserter` and `DataService` classes to use the pooled connections:
+
+#### Data Insertion Class
+
+```java
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+
+public class DataInserter {
+
+    public void insertData(Dataset<Row> data) {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        try {
+            // Get the singleton database connection
+            connection = DatabaseConnection.getInstance().getConnection();
+
+            // Prepare the SQL statement
+            String sql = "INSERT INTO your_table_name (column1, column2, column3) VALUES (?, ?, ?)";
+            preparedStatement = connection.prepareStatement(sql);
+
+            // Iterate over rows and set values
+            data.foreachPartition(rows -> {
+                while (rows.hasNext()) {
+                    Row row = rows.next();
+                    preparedStatement.setString(1, row.getString(0));
+                    preparedStatement.setString(2, row.getString(1));
+                    preparedStatement.setString(3, row.getString(2));
+                    preparedStatement.addBatch();
+                }
+                preparedStatement.executeBatch();
+            });
+
+            // Commit the transaction
+            connection.commit();
+
+        } catch (SQLException e) {
+            if (connection != null) {
+                try {
+                    connection.rollback();
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
+            }
+            e.printStackTrace();
+        } finally {
+            if (preparedStatement != null) {
+                try {
+                    preparedStatement.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+}
+```
+
+#### Service Class Managing Transactions
+
+```java
+public class DataService {
+
+    public void performOperations(Dataset<Row> data) {
+        Connection connection = null;
+        try {
+            connection = DatabaseConnection.getInstance().getConnection();
+            
+            // Perform data insertion
+            DataInserter dataInserter = new DataInserter();
+            dataInserter.insertData(data);
+
+            // Perform other operations
+            // OtherOperationClass otherOp = new OtherOperationClass();
+            // otherOp.performOperation(connection, ...);
+
+            // Commit the transaction
+            connection.commit();
+        } catch (SQLException e) {
+            if (connection != null) {
+                try {
+                    connection.rollback();
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
+            }
+            e.printStackTrace();
+        } finally {
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+}
+```
+
+### Explanation
+
+1. **HikariCP Configuration**: The `HikariCPDataSource` class configures and initializes a HikariCP connection pool.
+2. **Singleton for Connection**: The `DatabaseConnection` class uses the HikariCP connection pool to provide connections.
+3. **Database Operations**: The `DataInserter` and `DataService` classes obtain connections from the pool and perform operations within a transaction. The transaction is committed or rolled back as needed, and connections are returned to the pool after use.
+
+This setup ensures secure and efficient database access with transaction management using a connection pool in your Spark application.

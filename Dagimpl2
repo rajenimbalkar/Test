@@ -1,0 +1,198 @@
+Certainly! Below are examples for configuring each required component in Airflow:
+
+### 1. **Airflow Connections**
+
+#### S3 Connection (`aws_default`)
+1. Go to **Admin** -> **Connections** in the Airflow UI.
+2. Click **Create**.
+3. Set the connection details:
+    - **Conn Id**: `aws_default`
+    - **Conn Type**: `Amazon Web Services`
+    - **Extra**: `{"aws_access_key_id": "YOUR_ACCESS_KEY", "aws_secret_access_key": "YOUR_SECRET_KEY", "region_name": "YOUR_AWS_REGION"}`
+
+#### Spark Connection (`spark_default`)
+1. Go to **Admin** -> **Connections**.
+2. Click **Create**.
+3. Set the connection details:
+    - **Conn Id**: `spark_default`
+    - **Conn Type**: `Spark`
+    - **Host**: `spark://your-spark-master:7077` (update this with your Spark master URL)
+    - **Extra**: `{"queue": "default"}` (if you have a specific queue)
+
+#### Database Connection (`db_default`)
+1. Go to **Admin** -> **Connections**.
+2. Click **Create**.
+3. Set the connection details:
+    - **Conn Id**: `db_default`
+    - **Conn Type**: `Postgres` (or the relevant database type)
+    - **Host**: `your-db-host`
+    - **Schema**: `your-db-name`
+    - **Login**: `your-db-username`
+    - **Password**: `your-db-password`
+    - **Port**: `5432` (or the relevant port number)
+
+#### SMTP Connection (`smtp_default`)
+1. Go to **Admin** -> **Connections**.
+2. Click **Create**.
+3. Set the connection details:
+    - **Conn Id**: `smtp_default`
+    - **Conn Type**: `SMTP`
+    - **Host**: `smtp.your-email-provider.com`
+    - **Login**: `your-email-username`
+    - **Password**: `your-email-password`
+    - **Port**: `587` (or the relevant port number)
+    - **Extra**: `{"smtp_starttls": true}`
+
+### 2. **Airflow Variables**
+
+1. Go to **Admin** -> **Variables** in the Airflow UI.
+2. Add the following variables:
+
+| Key               | Value                             |
+|-------------------|-----------------------------------|
+| `s3_bucket`       | `your-s3-bucket-name`             |
+| `input_folder`    | `your/input/folder/`              |
+| `processed_folder`| `your/processed/folder/`          |
+| `spark_submit_path`| `/path/to/spark-submit`          |
+| `spark_jar`       | `/path/to/your-spark-job.jar`     |
+| `spark_main_class`| `com.yourcompany.YourMainClass`   |
+
+### 3. **DAG Code**
+Update the DAG code with your configurations:
+
+```python
+from datetime import datetime, timedelta
+import os
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.operators.email_operator import EmailOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.hooks.base_hook import BaseHook
+import boto3
+import psycopg2
+from airflow.models import Variable
+
+# Default arguments
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'email': ['your_email@example.com'],
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# DAG definition
+dag = DAG(
+    's3_to_spark_to_db',
+    default_args=default_args,
+    description='A pipeline to process files from S3 with Spark and update a database',
+    schedule_interval=timedelta(days=1),
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
+    max_active_runs=1,
+)
+
+s3_bucket = Variable.get("s3_bucket")
+input_folder = Variable.get("input_folder")
+processed_folder = Variable.get("processed_folder")
+spark_submit_path = Variable.get("spark_submit_path")
+spark_jar = Variable.get("spark_jar")
+spark_main_class = Variable.get("spark_main_class")
+
+def list_files(**kwargs):
+    s3 = S3Hook('aws_default')
+    files = s3.list_keys(bucket_name=s3_bucket, prefix=input_folder)
+    if not files:
+        raise ValueError("No files found in input folder.")
+    return files
+
+def process_file(file_key):
+    s3 = S3Hook('aws_default')
+    s3_conn = s3.get_conn()
+    bucket = s3_conn.Bucket(s3_bucket)
+    
+    # Download the file
+    file_path = os.path.join('/tmp', os.path.basename(file_key))
+    bucket.download_file(file_key, file_path)
+    
+    # Spark submit task
+    spark_task = SparkSubmitOperator(
+        task_id='spark_submit_' + os.path.basename(file_key),
+        application=spark_jar,
+        conn_id='spark_default',
+        java_class=spark_main_class,
+        application_args=[file_path],
+        dag=dag
+    )
+    
+    # Execute the Spark job
+    spark_task.execute(context={})
+    
+    # Update database
+    db_conn = BaseHook.get_connection('db_default')
+    conn = psycopg2.connect(
+        dbname=db_conn.schema,
+        user=db_conn.login,
+        password=db_conn.password,
+        host=db_conn.host,
+        port=db_conn.port
+    )
+    cursor = conn.cursor()
+    insert_query = "INSERT INTO processed_files (file_name, processed_at) VALUES (%s, %s)"
+    cursor.execute(insert_query, (os.path.basename(file_key), datetime.now()))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    # Move the file to the processed folder
+    new_key = file_key.replace(input_folder, processed_folder)
+    bucket.copy({'Bucket': s3_bucket, 'Key': file_key}, new_key)
+    bucket.delete_objects(Delete={'Objects': [{'Key': file_key}]})
+
+def process_files(**kwargs):
+    files = kwargs['ti'].xcom_pull(task_ids='list_files')
+    if not files:
+        raise ValueError("No files to process.")
+    
+    for file_key in files:
+        process_file(file_key)
+
+list_files_task = PythonOperator(
+    task_id='list_files',
+    python_callable=list_files,
+    provide_context=True,
+    dag=dag
+)
+
+process_files_task = PythonOperator(
+    task_id='process_files',
+    python_callable=process_files,
+    provide_context=True,
+    dag=dag
+)
+
+send_failure_email = EmailOperator(
+    task_id='send_failure_email',
+    to=['your_email@example.com'],
+    subject='Airflow DAG Failure: s3_to_spark_to_db',
+    html_content='The DAG "s3_to_spark_to_db" has failed.',
+    trigger_rule='one_failed',
+    dag=dag
+)
+
+list_files_task >> process_files_task
+process_files_task >> send_failure_email
+```
+
+### Explanation
+
+1. **Connections**: Define connections in Airflow for S3, Spark, Database, and SMTP.
+
+2. **Variables**: Set variables in Airflow for S3 bucket names, Spark paths, and job details.
+
+3. **DAG Code**: The provided DAG code includes tasks for listing files in S3, processing each file with Spark, updating the database, and handling errors with email notifications.
+
+By following these steps and configurations, you can create a robust Airflow DAG that processes files from an S3 bucket with a Spark job, updates a database, and handles errors gracefully.

@@ -1,0 +1,44 @@
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class Main {
+    public static void main(String[] args) {
+        // Example list1
+        List<Map<String, Object>> list1 = new ArrayList<>();
+        list1.add(new HashMap<String, Object>() {{
+            put("id", 1);
+            put("name", "Alice");
+        }});
+        list1.add(new HashMap<String, Object>() {{
+            put("id", 2);
+            put("name", "Bob");
+        }});
+
+        // Example list2
+        List<Map<String, Object>> list2 = new ArrayList<>();
+        list2.add(new HashMap<String, Object>() {{
+            put("id", 2);
+            put("name", "Bob");
+        }});
+        list2.add(new HashMap<String, Object>() {{
+            put("id", 3);
+            put("name", "Charlie");
+        }});
+
+        // Merging lists and filtering out duplicates based on both "id" and "name"
+        List<Map<String, Object>> mergedList = Stream.concat(list1.stream(), list2.stream())
+                .collect(Collectors.toMap(
+                        // Create a composite key using "id" and "name"
+                        map -> new AbstractMap.SimpleEntry<>(map.get("id"), map.get("name")),
+                        map -> map,
+                        (existing, replacement) -> existing
+                ))
+                .values()
+                .stream()
+                .collect(Collectors.toList());
+
+        // Print mergedList
+        mergedList.forEach(System.out::println);
+    }
+}

@@ -1,10 +1,10 @@
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
-import org.apache.spark.sql.Encoders;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.functions;
 
 import java.util.*;
@@ -19,7 +19,7 @@ public class Main {
                 .getOrCreate();
 
         // Define schema for the dataset
-        StructType schema = DataTypes.createStructType(new StructField[] {
+        StructType schema = DataTypes.createStructType(new StructField[]{
                 DataTypes.createStructField("id", DataTypes.StringType, false),
                 DataTypes.createStructField("name", DataTypes.StringType, false),
                 DataTypes.createStructField("age", DataTypes.IntegerType, false),
@@ -48,41 +48,32 @@ public class Main {
             put("status", "inactive");
         }});
 
+        // Specify keys to filter by
+        Set<String> keysToFilterBy = new HashSet<>(Arrays.asList("name", "status"));
+
         // Print original dataset
         System.out.println("Original Dataset:");
         dataset.show();
 
-        // Convert list of maps to a Dataset for filtering
-        Dataset<Row> conditionsDataset = spark.createDataset(
-                listOfMaps.stream()
-                        .map(map -> {
-                            String name = (String) map.getOrDefault("name", null);
-                            Integer age = (Integer) map.getOrDefault("age", null);
-                            String status = (String) map.getOrDefault("status", null);
-                            return new ConditionRow(name, age, status);
+        // Build filter conditions for the specified keys
+        String filterCondition = listOfMaps.stream()
+                .map(map -> map.entrySet().stream()
+                        .filter(entry -> keysToFilterBy.contains(entry.getKey()))
+                        .map(entry -> {
+                            String key = entry.getKey();
+                            Object value = entry.getValue();
+                            if (value instanceof String) {
+                                return key + " = '" + value + "'";
+                            } else if (value instanceof Integer) {
+                                return key + " = " + value;
+                            }
+                            return "";
                         })
-                        .collect(Collectors.toList()),
-                Encoders.bean(ConditionRow.class)
-        ).distinct();
+                        .collect(Collectors.joining(" AND ")))
+                .collect(Collectors.joining(" OR "));
 
-        // Print conditions dataset
-        System.out.println("Conditions Dataset:");
-        conditionsDataset.show();
-
-        // Remove rows from the original dataset based on conditions
-        Dataset<Row> filteredDataset = dataset.join(
-                conditionsDataset,
-                dataset.col("name").equalTo(conditionsDataset.col("name"))
-                        .and(
-                                conditionsDataset.col("age").isNull()
-                                        .or(dataset.col("age").equalTo(conditionsDataset.col("age")))
-                        )
-                        .and(
-                                conditionsDataset.col("status").isNull()
-                                        .or(dataset.col("status").equalTo(conditionsDataset.col("status")))
-                        ),
-                "left_anti"
-        );
+        // Apply filter condition
+        Dataset<Row> filteredDataset = dataset.filter(functions.not(functions.expr(filterCondition)));
 
         // Print filtered dataset
         System.out.println("Filtered Dataset:");
@@ -90,46 +81,5 @@ public class Main {
 
         // Stop the Spark session
         spark.stop();
-    }
-
-    // Class to represent a row for conditions
-    public static class ConditionRow {
-        private String name;
-        private Integer age;
-        private String status;
-
-        // Constructors, getters, and setters
-        public ConditionRow() {
-        }
-
-        public ConditionRow(String name, Integer age, String status) {
-            this.name = name;
-            this.age = age;
-            this.status = status;
-        }
-
-        public String getName() {
-            return name;
-        }
-
-        public void setName(String name) {
-            this.name = name;
-        }
-
-        public Integer getAge() {
-            return age;
-        }
-
-        public void setAge(Integer age) {
-            this.age = age;
-        }
-
-        public String getStatus() {
-            return status;
-        }
-
-        public void setStatus(String status) {
-            this.status = status;
-        }
     }
 }

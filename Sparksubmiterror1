@@ -9,25 +9,31 @@
                     <goals>
                         <goal>repackage</goal>
                     </goals>
-                    <configuration>
-                        <!-- Skip spring-boot repackage -->
-                        <skip>true</skip>
-                    </configuration>
                 </execution>
             </executions>
         </plugin>
-        <!-- Maven JAR Plugin -->
+
+        <!-- Maven Shade Plugin for creating a fat JAR -->
         <plugin>
             <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-jar-plugin</artifactId>
-            <configuration>
-                <archive>
-                    <manifest>
-                        <addClasspath>true</addClasspath>
-                        <mainClass>com.example.MainApplication</mainClass>
-                    </manifest>
-                </archive>
-            </configuration>
+            <artifactId>maven-shade-plugin</artifactId>
+            <version>3.2.4</version>
+            <executions>
+                <execution>
+                    <phase>package</phase>
+                    <goals>
+                        <goal>shade</goal>
+                    </goals>
+                    <configuration>
+                        <createDependencyReducedPom>false</createDependencyReducedPom>
+                        <transformers>
+                            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <mainClass>com.example.MainApplication</mainClass>
+                            </transformer>
+                        </transformers>
+                    </configuration>
+                </execution>
+            </executions>
         </plugin>
     </plugins>
 </build>

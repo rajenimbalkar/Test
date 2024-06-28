@@ -1,0 +1,169 @@
+### Spring Boot Application with Apache Spark
+
+This example demonstrates how to build a Spring Boot application that integrates with Apache Spark, and how to run it using `spark-submit`.
+
+### Project Setup
+
+1. **Spring Boot Version**: 3.3.1
+2. **Apache Spark Version**: 3.4.1
+3. **Java Version**: 17
+
+### Step-by-Step Implementation
+
+#### 1. Maven Project Setup
+
+Create a Maven project and add the necessary dependencies in your `pom.xml`.
+
+##### `pom.xml`
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>spark-springboot-example</artifactId>
+    <version>1.0.0</version>
+    <properties>
+        <java.version>17</java.version>
+        <spring-boot.version>3.3.1</spring-boot.version>
+        <spark.version>3.4.1</spark.version> <!-- Adjust Spark version as needed -->
+    </properties>
+    <dependencies>
+        <!-- Spring Boot Starter -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+            <version>${spring-boot.version}</version>
+        </dependency>
+
+        <!-- Apache Spark Core -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-core_2.12</artifactId>
+            <version>${spark.version}</version>
+        </dependency>
+
+        <!-- Apache Spark SQL -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.12</artifactId>
+            <version>${spark.version}</version>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <!-- Spring Boot Maven Plugin -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+            </plugin>
+
+            <!-- Maven Shade Plugin for creating a fat JAR -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.2.4</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.example.SparkSpringBootApplication</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+#### 2. Application Code
+
+Create a Spring Boot application that initializes a Spark session and performs a simple data processing task.
+
+##### `SparkSpringBootApplication.java`
+
+```java
+package com.example;
+
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+@SpringBootApplication
+public class SparkSpringBootApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SparkSpringBootApplication.class, args);
+    }
+
+    @Bean
+    public CommandLineRunner run() {
+        return args -> {
+            SparkSession spark = SparkSession.builder()
+                    .appName("Spring Boot with Spark")
+                    .config("spark.master", "local") // Replace with your Spark master
+                    .getOrCreate();
+
+            // Sample data processing
+            Dataset<Row> df = spark.read().json("path/to/sample.json");
+            df.show();
+        };
+    }
+}
+```
+
+#### 3. Sample JSON File
+
+Prepare a sample JSON file for Spark to read. Place it at `path/to/sample.json`.
+
+```json
+[
+    {"name": "John", "age": 30},
+    {"name": "Doe", "age": 25}
+]
+```
+
+#### 4. Build the Application
+
+Use Maven to build the application into a fat JAR:
+
+```bash
+mvn clean package
+```
+
+This will create a JAR file in the `target` directory, for example, `spark-springboot-example-1.0.0.jar`.
+
+#### 5. Run with Spark Submit
+
+Run the generated JAR file using `spark-submit`.
+
+```bash
+spark-submit --class com.example.SparkSpringBootApplication --master yarn target/spark-springboot-example-1.0.0.jar
+```
+
+Replace `--master yarn` with `--master local[*]` or your specific Spark master as needed.
+
+### Additional Considerations
+
+- **Spark Configuration**: Adjust Spark configurations (`spark.master`, etc.) in the application code or provide them via command line options in `spark-submit`.
+- **Resource Management**: Ensure your application manages resources effectively, especially when running on a Spark cluster.
+- **Cluster Deployment**: If running on a cluster, ensure the file paths are accessible across all nodes.
+
+### Conclusion
+
+This example provides a basic setup for integrating a Spring Boot application with Apache Spark, showing how to build and run the application using `spark-submit`. Adjust the code and configurations as necessary for your specific use case, including Spark master settings, data paths, and additional dependencies.

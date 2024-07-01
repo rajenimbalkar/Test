@@ -1,0 +1,106 @@
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+
+public class DynamicMergeExample {
+    public static void main(String[] args) {
+        String jdbcUrl = "jdbc:db2://localhost:50000/your_database";
+        String username = "your_username";
+        String password = "your_password";
+
+        // Example data to be upserted
+        Object[][] data = {
+            {1, "Name1", 100},
+            {2, "Name2", 200},
+            {3, "Name3", 300}
+        };
+
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, username, password)) {
+            connection.setAutoCommit(false);
+
+            // Generate the dynamic MERGE SQL query
+            String mergeSql = generateMergeSql("your_table", new String[]{"id", "name", "value"});
+            System.out.println("Generated SQL: " + mergeSql);
+
+            try (PreparedStatement preparedStatement = connection.prepareStatement(mergeSql)) {
+
+                // Populate the prepared statement with data
+                for (Object[] record : data) {
+                    preparedStatement.setInt(1, (Integer) record[0]); // id
+                    preparedStatement.setString(2, (String) record[1]); // name
+                    preparedStatement.setInt(3, (Integer) record[2]); // value
+
+                    // Add to batch
+                    preparedStatement.addBatch();
+                }
+
+                // Execute the batch
+                int[] updateCounts = preparedStatement.executeBatch();
+                connection.commit();
+
+                System.out.println("Upsert completed: " + updateCounts.length + " records processed.");
+            } catch (SQLException e) {
+                connection.rollback();
+                e.printStackTrace();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Generate a dynamic MERGE SQL statement.
+     * @param tableName the name of the table.
+     * @param columns the columns involved in the merge.
+     * @return the generated SQL string.
+     */
+    private static String generateMergeSql(String tableName, String[] columns) {
+        StringBuilder sql = new StringBuilder();
+        sql.append("MERGE INTO ").append(tableName).append(" AS target ");
+        sql.append("USING (VALUES (?, ?, ?)) AS source (");
+
+        // Append columns to the USING clause
+        for (int i = 0; i < columns.length; i++) {
+            sql.append(columns[i]);
+            if (i < columns.length - 1) {
+                sql.append(", ");
+            }
+        }
+
+        sql.append(") ON target.id = source.id ");
+        sql.append("WHEN MATCHED THEN UPDATE SET ");
+
+        // Append columns for update
+        for (int i = 1; i < columns.length; i++) { // Skip the first column (id)
+            sql.append("target.").append(columns[i]).append(" = source.").append(columns[i]);
+            if (i < columns.length - 1) {
+                sql.append(", ");
+            }
+        }
+
+        sql.append(" WHEN NOT MATCHED THEN INSERT (");
+
+        // Append columns for insert
+        for (int i = 0; i < columns.length; i++) {
+            sql.append(columns[i]);
+            if (i < columns.length - 1) {
+                sql.append(", ");
+            }
+        }
+
+        sql.append(") VALUES (");
+
+        // Append values for insert
+        for (int i = 0; i < columns.length; i++) {
+            sql.append("source.").append(columns[i]);
+            if (i < columns.length - 1) {
+                sql.append(", ");
+            }
+        }
+
+        sql.append(")");
+
+        return sql.toString();
+    }
+}

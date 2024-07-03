@@ -1,0 +1,89 @@
+package com.example.sparkprocessor;
+
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.expressions.UserDefinedFunction;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.types.*;
+
+import java.util.*;
+
+public class AddDynamicColumn {
+
+    public static Dataset<Row> addColumnFromMap(Dataset<Row> df, Map<String, Object> valueMap, String newColumnName, String keyColumnName) {
+        // Infer the data type from the map
+        DataType dataType = inferDataType(valueMap);
+
+        // Create a UDF to fetch values from the map
+        UserDefinedFunction fetchValueFromMap = functions.udf(
+                (String key) -> valueMap.getOrDefault(key, null),
+                dataType
+        );
+
+        // Add the new column using the UDF
+        df = df.withColumn(newColumnName, fetchValueFromMap.apply(df.col(keyColumnName)));
+
+        return df;
+    }
+
+    // Infer data type from the map values
+    private static DataType inferDataType(Map<String, Object> valueMap) {
+        if (valueMap.isEmpty()) {
+            return DataTypes.StringType;  // Default to StringType if map is empty
+        }
+        
+        Object sampleValue = valueMap.values().iterator().next();
+        if (sampleValue instanceof Integer) {
+            return DataTypes.IntegerType;
+        } else if (sampleValue instanceof Double) {
+            return DataTypes.DoubleType;
+        } else if (sampleValue instanceof Float) {
+            return DataTypes.FloatType;
+        } else if (sampleValue instanceof Long) {
+            return DataTypes.LongType;
+        } else if (sampleValue instanceof Boolean) {
+            return DataTypes.BooleanType;
+        } else if (sampleValue instanceof java.sql.Date) {
+            return DataTypes.DateType;
+        } else if (sampleValue instanceof java.sql.Timestamp) {
+            return DataTypes.TimestampType;
+        } else {
+            return DataTypes.StringType;  // Default to StringType for any other type
+        }
+    }
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("AddDynamicColumn")
+                .master("local[*]")
+                .getOrCreate();
+
+        // Sample data
+        List<Row> data = Arrays.asList(
+                RowFactory.create("Alice", 29),
+                RowFactory.create("Bob", 35),
+                RowFactory.create("Charlie", 40)
+        );
+
+        // Define initial schema
+        StructType schema = new StructType(new StructField[]{
+                DataTypes.createStructField("name", DataTypes.StringType, true),
+                DataTypes.createStructField("age", DataTypes.IntegerType, true)
+        });
+
+        // Create initial DataFrame
+        Dataset<Row> df = spark.createDataFrame(data, schema);
+        df.show(false);
+
+        // Define the value map with dynamic types
+        Map<String, Object> valueMap = new HashMap<>();
+        valueMap.put("Alice", 100.5);  // Double
+        valueMap.put("Bob", true);     // Boolean
+        valueMap.put("Charlie", "Expert");  // String
+
+        // Add the new column based on the value map
+        Dataset<Row> updatedDf = addColumnFromMap(df, valueMap, "additionalInfo", "name");
+        updatedDf.show(false);
+
+        spark.stop();
+    }
+}

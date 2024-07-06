@@ -1,0 +1,212 @@
+To support custom patterns defined in the YAML configuration file for validating positional fixed-width flat files using Java and Apache Spark, you need to adjust the `validation.yaml` to include custom regex patterns and enhance the `RecordValidator` to process these patterns.
+
+### Step-by-Step Enhanced Implementation
+
+1. **Extended Validation Rules in `validation.yaml`**:
+
+   Include custom patterns that can be applied to specific fields in the record.
+
+   ```yaml
+   validation:
+     header:
+       length: 50
+       patterns:
+         recordType: 
+           start: 0
+           end: 3
+           regex: "^HDR$"
+         date: 
+           start: 4
+           end: 12
+           regex: "^[0-9]{8}$"
+         onlyCharacters: 
+           start: 12
+           end: 22
+           regex: "^[A-Za-z]+$"
+         onlyIntegers: 
+           start: 22
+           end: 32
+           regex: "^[0-9]+$"
+     data:
+       length: 100
+       patterns:
+         recordType: 
+           start: 0
+           end: 3
+           regex: "^DAT$"
+         date: 
+           start: 20
+           end: 28
+           regex: "^[0-9]{8}$"
+         onlyCharacters: 
+           start: 28
+           end: 38
+           regex: "^[A-Za-z]+$"
+         onlyIntegers: 
+           start: 38
+           end: 48
+           regex: "^[0-9]+$"
+     trailer:
+       length: 50
+       patterns:
+         recordType: 
+           start: 0
+           end: 3
+           regex: "^TRL$"
+         onlyCharacters: 
+           start: 4
+           end: 14
+           regex: "^[A-Za-z]+$"
+         onlyIntegers: 
+           start: 14
+           end: 24
+           regex: "^[0-9]+$"
+   ```
+
+2. **Update `RecordValidator` for Custom Pattern Checks**:
+
+   Extend the `RecordValidator` to process the custom regex patterns defined in the YAML file.
+
+   ```java
+   import java.util.HashMap;
+   import java.util.Map;
+   import java.util.regex.Pattern;
+
+   public class RecordValidator {
+       private Map<String, Map<String, Object>> rules;
+
+       public RecordValidator(Map<String, Map<String, Object>> rules) {
+           this.rules = rules;
+       }
+
+       public Map<Integer, String> validateRecord(String record, String recordType, int lineNumber) {
+           Map<Integer, String> errors = new HashMap<>();
+           Map<String, Object> rule = rules.get(recordType);
+
+           if (rule == null) {
+               errors.put(lineNumber, "Unknown record type: " + recordType);
+               return errors;
+           }
+
+           // Check length
+           int expectedLength = (int) rule.get("length");
+           if (record.length() != expectedLength) {
+               errors.put(lineNumber, "Invalid length: expected " + expectedLength + ", got " + record.length());
+           }
+
+           // Validate patterns
+           Map<String, Object> patterns = (Map<String, Object>) rule.get("patterns");
+           patterns.forEach((key, value) -> {
+               int start = (int) ((Map<String, Object>) value).get("start");
+               int end = (int) ((Map<String, Object>) value).get("end");
+               String regex = (String) ((Map<String, Object>) value).get("regex");
+               String actualValue = record.substring(start, end).trim();
+
+               if (!Pattern.matches(regex, actualValue)) {
+                   errors.put(lineNumber, "Invalid " + key + " at positions " + start + "-" + end + ": expected pattern " + regex);
+               }
+           });
+
+           return errors;
+       }
+
+       public void validateHeaderTrailerCounts(Map<String, Integer> headerTrailerCounts, Map<Integer, String> errors, int lineNumber) {
+           headerTrailerCounts.forEach((type, count) -> {
+               if (type.equals("HDR") && count != 1) {
+                   errors.put(lineNumber, "Invalid header count: expected 1, got " + count);
+               } else if (type.equals("TRL") && count != 1) {
+                   errors.put(lineNumber, "Invalid trailer count: expected 1, got " + count);
+               }
+           });
+       }
+   }
+   ```
+
+3. **Main Spark Processing Logic**:
+
+   Process the file using Spark, validate each record, and ensure the correct occurrence of header and trailer records.
+
+   ```java
+   import org.apache.spark.sql.Dataset;
+   import org.apache.spark.sql.Encoders;
+   import org.apache.spark.sql.SparkSession;
+
+   import java.util.HashMap;
+   import java.util.List;
+   import java.util.Map;
+   import java.util.concurrent.atomic.AtomicInteger;
+
+   public class FileValidator {
+       public static void main(String[] args) {
+           SparkSession spark = SparkSession.builder()
+                   .appName("File Validator")
+                   .master("local[*]")
+                   .getOrCreate();
+
+           // Load validation configuration
+           ValidationConfig config = ValidationConfig.load("validation.yaml");
+           RecordValidator validator = new RecordValidator(config.getValidation());
+
+           // Example dataset from a fixed-width file
+           List<String> lines = List.of(
+               "HDR20220101Header12345",  // Header
+               "DAT20220101SomeData12345678",
+               "DAT20220102MoreData12345678",
+               "TRLTrailer112233"  // Trailer
+           );
+
+           Dataset<String> dataset = spark.createDataset(lines, Encoders.STRING());
+
+           // Process each row
+           Map<String, Integer> headerTrailerCounts = new HashMap<>();
+           AtomicInteger lineNumber = new AtomicInteger(1);
+           Map<Integer, String> errorMap = new HashMap<>();
+
+           dataset.foreach(row -> {
+               String recordType = row.substring(0, 3).trim();
+               Map<Integer, String> errors = validator.validateRecord(row, recordType, lineNumber.getAndIncrement());
+
+               if (recordType.equals("HDR")) {
+                   headerTrailerCounts.put("HDR", headerTrailerCounts.getOrDefault("HDR", 0) + 1);
+               } else if (recordType.equals("TRL")) {
+                   headerTrailerCounts.put("TRL", headerTrailerCounts.getOrDefault("TRL", 0) + 1);
+               }
+
+               if (!errors.isEmpty()) {
+                   errorMap.putAll(errors);
+               }
+           });
+
+           // Validate header and trailer counts per set
+           validator.validateHeaderTrailerCounts(headerTrailerCounts, errorMap, -1);
+
+           // Print and return error map
+           errorMap.forEach((line, error) -> System.out.println("Line: " + line + ", Error: " + error));
+
+           spark.stop();
+       }
+   }
+   ```
+
+### Explanation
+
+1. **Extended Validation Configuration**:
+   - `validation.yaml` now includes custom regex patterns for fields, allowing for validation against specific formats like dates, only characters, only integers, or any other custom regex.
+
+2. **Updated `RecordValidator`**:
+   - The `validateRecord` method has been enhanced to use regex patterns for validation. It checks if the field values match the defined regex patterns and reports errors accordingly.
+
+3. **Main Spark Processing Logic**:
+   - The Spark processing logic reads records from a fixed-width flat file, applies validation using the enhanced `RecordValidator`, and checks the counts of headers and trailers.
+
+### Extensibility
+
+1. **Support New Patterns**: Update `validation.yaml` to include new patterns and regex as needed.
+2. **More Complex Validations**: Enhance `RecordValidator` to support more complex validation scenarios, such as cross-field validations or conditional patterns.
+
+### Adding More Features
+
+1. **Advanced Pattern Validation**: Implement advanced validation rules such as conditional patterns or interdependent fields.
+2. **Dynamic Field Parsing**: Adjust the parsing logic to handle variable-length fields or different delimiters if needed.
+
+This approach provides a flexible and extensible way to validate fixed-width positional flat files against a wide range of patterns using Apache Spark in Java. Adjust the YAML configurations and validation logic to fit the specific requirements of your application.

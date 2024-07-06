@@ -1,71 +1,159 @@
-To support custom patterns defined in the YAML configuration file for validating positional fixed-width flat files using Java and Apache Spark, you need to adjust the `validation.yaml` to include custom regex patterns and enhance the `RecordValidator` to process these patterns.
+To manage multiple validation files for different positional fixed-width file types in Java with Apache Spark, you can organize your validation rules into separate YAML files. This approach simplifies maintenance and scalability when supporting diverse file formats.
 
-### Step-by-Step Enhanced Implementation
+### Step-by-Step Implementation
 
-1. **Extended Validation Rules in `validation.yaml`**:
+1. **Define Separate YAML Validation Files**:
 
-   Include custom patterns that can be applied to specific fields in the record.
+   Create individual YAML files for each file type with the respective validation rules.
 
-   ```yaml
-   validation:
+   - **`validation_type1.yaml`**:
+     ```yaml
      header:
        length: 50
        patterns:
-         recordType: 
+         recordType:
            start: 0
            end: 3
            regex: "^HDR$"
-         date: 
+         date:
            start: 4
            end: 12
            regex: "^[0-9]{8}$"
-         onlyCharacters: 
+         onlyCharacters:
            start: 12
            end: 22
            regex: "^[A-Za-z]+$"
-         onlyIntegers: 
+         onlyIntegers:
            start: 22
            end: 32
            regex: "^[0-9]+$"
      data:
        length: 100
        patterns:
-         recordType: 
+         recordType:
            start: 0
            end: 3
            regex: "^DAT$"
-         date: 
+         date:
            start: 20
            end: 28
            regex: "^[0-9]{8}$"
-         onlyCharacters: 
+         onlyCharacters:
            start: 28
            end: 38
            regex: "^[A-Za-z]+$"
-         onlyIntegers: 
+         onlyIntegers:
            start: 38
            end: 48
            regex: "^[0-9]+$"
      trailer:
        length: 50
        patterns:
-         recordType: 
+         recordType:
            start: 0
            end: 3
            regex: "^TRL$"
-         onlyCharacters: 
+         onlyCharacters:
            start: 4
            end: 14
            regex: "^[A-Za-z]+$"
-         onlyIntegers: 
+         onlyIntegers:
            start: 14
            end: 24
            regex: "^[0-9]+$"
+     ```
+
+   - **`validation_type2.yaml`**:
+     ```yaml
+     header:
+       length: 60
+       patterns:
+         recordType:
+           start: 0
+           end: 4
+           regex: "^HDR2$"
+         date:
+           start: 5
+           end: 13
+           regex: "^[0-9]{8}$"
+         onlyCharacters:
+           start: 14
+           end: 25
+           regex: "^[A-Za-z]+$"
+         onlyIntegers:
+           start: 25
+           end: 35
+           regex: "^[0-9]+$"
+     data:
+       length: 120
+       patterns:
+         recordType:
+           start: 0
+           end: 4
+           regex: "^DAT2$"
+         date:
+           start: 30
+           end: 38
+           regex: "^[0-9]{8}$"
+         onlyCharacters:
+           start: 40
+           end: 50
+           regex: "^[A-Za-z]+$"
+         onlyIntegers:
+           start: 50
+           end: 60
+           regex: "^[0-9]+$"
+     trailer:
+       length: 60
+       patterns:
+         recordType:
+           start: 0
+           end: 4
+           regex: "^TRL2$"
+         onlyCharacters:
+           start: 5
+           end: 15
+           regex: "^[A-Za-z]+$"
+         onlyIntegers:
+           start: 15
+           end: 25
+           regex: "^[0-9]+$"
+     ```
+
+2. **Utility to Load Validation Config**:
+
+   Create a utility to load the validation rules from the specified YAML file based on the file type.
+
+   ```java
+   import org.yaml.snakeyaml.Yaml;
+   import java.io.InputStream;
+   import java.util.Map;
+
+   public class ValidationConfig {
+       private Map<String, Map<String, Object>> validation;
+
+       public ValidationConfig(Map<String, Map<String, Object>> validation) {
+           this.validation = validation;
+       }
+
+       public static ValidationConfig load(String filePath) {
+           Yaml yaml = new Yaml();
+           try (InputStream inputStream = ValidationConfig.class.getClassLoader().getResourceAsStream(filePath)) {
+               return new ValidationConfig(yaml.load(inputStream));
+           } catch (Exception e) {
+               throw new RuntimeException("Error loading validation configuration from " + filePath, e);
+           }
+       }
+
+       public Map<String, Map<String, Object>> getValidation() {
+           return validation;
+       }
+   }
    ```
 
-2. **Update `RecordValidator` for Custom Pattern Checks**:
+3. **Modify `RecordValidator` to Support Multiple File Types**:
 
-   Extend the `RecordValidator` to process the custom regex patterns defined in the YAML file.
+   Adjust the `RecordValidator` class to use validation rules loaded dynamically based on the file type.
 
    ```java
    import java.util.HashMap;
@@ -122,9 +210,9 @@ To support custom patterns defined in the YAML configuration file for validating
    }
    ```
 
-3. **Main Spark Processing Logic**:
+4. **Main Spark Processing Logic**:
 
-   Process the file using Spark, validate each record, and ensure the correct occurrence of header and trailer records.
+   Update the Spark application to dynamically select the validation configuration file based on the file type.
 
    ```java
    import org.apache.spark.sql.Dataset;
@@ -143,16 +231,21 @@ To support custom patterns defined in the YAML configuration file for validating
                    .master("local[*]")
                    .getOrCreate();
 
-           // Load validation configuration
-           ValidationConfig config = ValidationConfig.load("validation.yaml");
+           // Determine the file type and load corresponding validation configuration
+           String fileType = "type1"; // This would be determined dynamically, possibly from arguments or file metadata
+           String validationFile = "validation_" + fileType + ".yaml";
+           ValidationConfig config = ValidationConfig.load(validationFile);
            RecordValidator validator = new RecordValidator(config.getValidation());
 
-           // Example dataset from a fixed-width file
-           List<String> lines = List.of(
+           // Example datasets for different file types
+           List<String> lines = fileType.equals("type1") ? List.of(
                "HDR20220101Header12345",  // Header
                "DAT20220101SomeData12345678",
-               "DAT20220102MoreData12345678",
                "TRLTrailer112233"  // Trailer
+           ) : List.of(
+               "HDR220220101Header   12345",  // Header
+               "DAT220220101SomeData   12345678",
+               "TRL2TrailerRecord 112233"  // Trailer
            );
 
            Dataset<String> dataset = spark.createDataset(lines, Encoders.STRING());
@@ -166,9 +259,9 @@ To support custom patterns defined in the YAML configuration file for validating
                String recordType = row.substring(0, 3).trim();
                Map<Integer, String> errors = validator.validateRecord(row, recordType, lineNumber.getAndIncrement());
 
-               if (recordType.equals("HDR")) {
+               if (recordType.equals("HDR") || recordType.equals("HDR2")) {
                    headerTrailerCounts.put("HDR", headerTrailerCounts.getOrDefault("HDR", 0) + 1);
-               } else if (recordType.equals("TRL")) {
+               } else if (recordType.equals("TRL") || recordType.equals("TRL2")) {
                    headerTrailerCounts.put("TRL", headerTrailerCounts.getOrDefault("TRL", 0) + 1);
                }
 
@@ -181,32 +274,4 @@ To support custom patterns defined in the YAML configuration file for validating
            validator.validateHeaderTrailerCounts(headerTrailerCounts, errorMap, -1);
 
            // Print and return error map
-           errorMap.forEach((line, error) -> System.out.println("Line: " + line + ", Error: " + error));
-
-           spark.stop();
-       }
-   }
-   ```
-
-### Explanation
-
-1. **Extended Validation Configuration**:
-   - `validation.yaml` now includes custom regex patterns for fields, allowing for validation against specific formats like dates, only characters, only integers, or any other custom regex.
-
-2. **Updated `RecordValidator`**:
-   - The `validateRecord` method has been enhanced to use regex patterns for validation. It checks if the field values match the defined regex patterns and reports errors accordingly.
-
-3. **Main Spark Processing Logic**:
-   - The Spark processing logic reads records from a fixed-width flat file, applies validation using the enhanced `RecordValidator`, and checks the counts of headers and trailers.
-
-### Extensibility
-
-1. **Support New Patterns**: Update `validation.yaml` to include new patterns and regex as needed.
-2. **More Complex Validations**: Enhance `RecordValidator` to support more complex validation scenarios, such as cross-field validations or conditional patterns.
-
-### Adding More Features
-
-1. **Advanced Pattern Validation**: Implement advanced validation rules such as conditional patterns or interdependent fields.
-2. **Dynamic Field Parsing**: Adjust the parsing logic to handle variable-length fields or different delimiters if needed.
-
-This approach provides a flexible and extensible way to validate fixed-width positional flat files against a wide range of patterns using Apache Spark in Java. Adjust the YAML configurations and validation logic to fit the specific requirements of your application.
+           errorMap.forEach

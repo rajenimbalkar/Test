@@ -1,0 +1,65 @@
+import org.apache.spark.util.AccumulatorV2;
+
+import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
+
+public class GenericMapAccumulator<K, V extends Number> extends AccumulatorV2<Map<K, V>, Map<K, V>> implements Serializable {
+
+    private Map<K, V> map = new HashMap<>();
+
+    @Override
+    public boolean isZero() {
+        return map.isEmpty();
+    }
+
+    @Override
+    public AccumulatorV2<Map<K, V>, Map<K, V>> copy() {
+        GenericMapAccumulator<K, V> newAcc = new GenericMapAccumulator<>();
+        newAcc.map.putAll(this.map);
+        return newAcc;
+    }
+
+    @Override
+    public void reset() {
+        map.clear();
+    }
+
+    @Override
+    public void add(Map<K, V> other) {
+        for (Map.Entry<K, V> entry : other.entrySet()) {
+            map.merge(entry.getKey(), entry.getValue(), this::combineValues);
+        }
+    }
+
+    @Override
+    public void merge(AccumulatorV2<Map<K, V>, Map<K, V>> other) {
+        GenericMapAccumulator<K, V> o = (GenericMapAccumulator<K, V>) other;
+        for (Map.Entry<K, V> entry : o.map.entrySet()) {
+            this.map.merge(entry.getKey(), entry.getValue(), this::combineValues);
+        }
+    }
+
+    @Override
+    public Map<K, V> value() {
+        return map;
+    }
+
+    private V combineValues(V v1, V v2) {
+        if (v1 instanceof Integer) {
+            return (V) Integer.valueOf(v1.intValue() + v2.intValue());
+        } else if (v1 instanceof Long) {
+            return (V) Long.valueOf(v1.longValue() + v2.longValue());
+        } else if (v1 instanceof Double) {
+            return (V) Double.valueOf(v1.doubleValue() + v2.doubleValue());
+        } else if (v1 instanceof Float) {
+            return (V) Float.valueOf(v1.floatValue() + v2.floatValue());
+        } else {
+            throw new UnsupportedOperationException("Type not supported: " + v1.getClass().getName());
+        }
+    }
+
+    public void addOrUpdate(K key, V value) {
+        map.merge(key, value, this::combineValues);
+    }
+}

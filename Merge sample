@@ -1,0 +1,89 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+public class SparkDb2MergeExample {
+
+    private static final String DB_URL = "jdbc:db2://localhost:50000/YOUR_DATABASE";
+    private static final String DB_USER = "your_username";
+    private static final String DB_PASSWORD = "your_password";
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("SparkDb2MergeExample")
+                .master("local[*]")
+                .getOrCreate();
+
+        Dataset<Row> dataset = createDataset(spark);
+
+        String tableName = "example_table";
+        List<String> columns = List.of("id", "name", "value");
+
+        mergeInsertOrUpdate(dataset, tableName, columns);
+
+        spark.stop();
+    }
+
+    private static Dataset<Row> createDataset(SparkSession spark) {
+        // Create a sample dataset
+        return spark.read().json("path_to_your_json_file.json");
+    }
+
+    public static void mergeInsertOrUpdate(Dataset<Row> dataset, String tableName, List<String> columns) {
+        String mergeSql = createMergeSql(tableName, columns);
+
+        try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+             PreparedStatement pstmt = conn.prepareStatement(mergeSql)) {
+
+            conn.setAutoCommit(false);
+
+            dataset.foreach(row -> {
+                try {
+                    for (int i = 0; i < columns.size(); i++) {
+                        pstmt.setObject(i + 1, row.getAs(columns.get(i)));
+                        pstmt.setObject(i + 1 + columns.size(), row.getAs(columns.get(i)));
+                    }
+                    pstmt.addBatch();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            });
+
+            pstmt.executeBatch();
+            conn.commit();
+            System.out.println("Merge (insert or update) completed successfully.");
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static String createMergeSql(String tableName, List<String> columns) {
+        String columnNames = String.join(", ", columns);
+        String valuesPlaceholders = IntStream.range(0, columns.size())
+                                             .mapToObj(i -> "?")
+                                             .collect(Collectors.joining(", "));
+        String updatePlaceholders = columns.stream()
+                                           .map(col -> col + " = ?")
+                                           .collect(Collectors.joining(", "));
+
+        return String.format(
+                "MERGE INTO %s AS target " +
+                "USING (VALUES (%s)) AS source (%s) " +
+                "ON target.id = source.id " +
+                "WHEN MATCHED THEN " +
+                "UPDATE SET %s " +
+                "WHEN NOT MATCHED THEN " +
+                "INSERT (%s) VALUES (%s)",
+                tableName, valuesPlaceholders, columnNames, updatePlaceholders, columnNames, valuesPlaceholders
+        );
+    }
+}

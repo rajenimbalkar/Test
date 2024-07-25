@@ -1,38 +1,39 @@
-To create a `MERGE` SQL statement where the target values and the `ON` condition columns are the same, we can adjust the implementation to use the same set of columns for both the `ON` condition and the `INSERT/UPDATE` operations.
-
-Here’s the updated implementation that ensures the `ON` condition columns and the columns used for the target values are the same:
+To update the enum to retrieve the column information based on the string table name, we can modify the enum to store the metadata in a map. This allows us to fetch the columns dynamically based on a provided string key. Here’s how to achieve this:
 
 ### Step-by-Step Implementation
 
-1. **Define an Enum for Table Metadata:**
-   - This enum holds the table-specific metadata such as table name, columns to be inserted or updated, and the columns used for the `ON` condition.
+1. **Define an Enum for Table Metadata with a Map:**
+   - The enum will store table names and their corresponding columns in a map.
+   - Add a method to retrieve columns based on the table name.
 
-2. **Create a Method to Generate the Merge SQL Statement:**
-   - This method will construct the SQL `MERGE` statement dynamically based on the input parameters.
+2. **Update the Method to Generate the Merge SQL Statement:**
+   - The method will fetch the column information from the enum based on the provided table name.
 
 ### Example Enum and Method Implementation
 
 #### Define the Enum
 
 ```java
+import java.util.HashMap;
+import java.util.Map;
+
 public enum TableMetadata {
-    USERS("users", new String[]{"id", "name", "email"}),
-    PRODUCTS("products", new String[]{"product_id", "product_name", "price"});
+    INSTANCE;
 
-    private final String tableName;
-    private final String[] columns;
+    private final Map<String, String[]> tableColumnsMap;
 
-    TableMetadata(String tableName, String[] columns) {
-        this.tableName = tableName;
-        this.columns = columns;
+    TableMetadata() {
+        tableColumnsMap = new HashMap<>();
+        tableColumnsMap.put("users", new String[]{"id", "name", "email"});
+        tableColumnsMap.put("products", new String[]{"product_id", "product_name", "price"});
     }
 
-    public String getTableName() {
-        return tableName;
+    public String[] getColumns(String tableName) {
+        return tableColumnsMap.get(tableName);
     }
 
-    public String[] getColumns() {
-        return columns;
+    public boolean hasTable(String tableName) {
+        return tableColumnsMap.containsKey(tableName);
     }
 }
 ```
@@ -44,9 +45,12 @@ import java.util.StringJoiner;
 
 public class SqlMergeGenerator {
 
-    public static String generateMergeSql(TableMetadata tableMetadata) {
-        String tableName = tableMetadata.getTableName();
-        String[] columns = tableMetadata.getColumns();
+    public static String generateMergeSql(String tableName) {
+        if (!TableMetadata.INSTANCE.hasTable(tableName)) {
+            throw new IllegalArgumentException("Table name not found in metadata: " + tableName);
+        }
+
+        String[] columns = TableMetadata.INSTANCE.getColumns(tableName);
 
         StringJoiner columnJoiner = new StringJoiner(", ");
         StringJoiner valueJoiner = new StringJoiner(", ", "(", ")");
@@ -71,7 +75,10 @@ public class SqlMergeGenerator {
     }
 
     public static void main(String[] args) {
-        String mergeSql = generateMergeSql(TableMetadata.USERS);
+        String mergeSql = generateMergeSql("users");
+        System.out.println(mergeSql);
+
+        mergeSql = generateMergeSql("products");
         System.out.println(mergeSql);
     }
 }
@@ -80,9 +87,11 @@ public class SqlMergeGenerator {
 ### Explanation
 
 1. **Enum `TableMetadata`:**
-   - Defines metadata for tables including table name and columns to be inserted or updated. These columns will also be used for the `ON` condition.
+   - Stores metadata for tables in a map where the key is the table name and the value is an array of column names.
+   - Provides methods `getColumns` to retrieve columns for a given table name and `hasTable` to check if a table exists.
 
 2. **Method `generateMergeSql`:**
+   - Retrieves the column information from the `TableMetadata` enum based on the provided table name.
    - Constructs a SQL `MERGE` statement dynamically:
      - **Column Joiner:** Joins column names with a comma for the insert and update parts of the merge.
      - **Value Joiner:** Creates placeholders (`?`) for the values to be inserted.
@@ -90,11 +99,11 @@ public class SqlMergeGenerator {
      - **Condition Joiner:** Constructs the `ON` condition for matching records using the same columns as the target values.
 
 3. **Main Method:**
-   - Demonstrates generating the `MERGE` SQL for the `USERS` table defined in the `TableMetadata` enum.
+   - Demonstrates generating the `MERGE` SQL for the `users` and `products` tables defined in the `TableMetadata` enum.
 
 ### Running the Code
 
-When you run the `main` method, it will print the dynamically generated `MERGE` SQL statement for the `USERS` table:
+When you run the `main` method, it will print the dynamically generated `MERGE` SQL statements for the `users` and `products` tables:
 
 ```sql
 MERGE INTO users AS target 
@@ -105,6 +114,15 @@ UPDATE SET id = source.id, name = source.name, email = source.email
 WHEN NOT MATCHED THEN 
 INSERT (id, name, email) 
 VALUES (?, ?, ?)
+
+MERGE INTO products AS target 
+USING (VALUES (?, ?, ?)) AS source (product_id, product_name, price) 
+ON target.product_id = source.product_id AND target.product_name = source.product_name AND target.price = source.price 
+WHEN MATCHED THEN 
+UPDATE SET product_id = source.product_id, product_name = source.product_name, price = source.price 
+WHEN NOT MATCHED THEN 
+INSERT (product_id, product_name, price) 
+VALUES (?, ?, ?)
 ```
 
-This implementation ensures that the `ON` condition columns and the target values columns are the same, making it a flexible solution for generating dynamic SQL `MERGE` statements based on table metadata.
+This implementation ensures that you can dynamically generate `MERGE` SQL statements based on table names and their corresponding columns, making it flexible and easily extendable.

@@ -1,0 +1,110 @@
+To create a `MERGE` SQL statement where the target values and the `ON` condition columns are the same, we can adjust the implementation to use the same set of columns for both the `ON` condition and the `INSERT/UPDATE` operations.
+
+Here’s the updated implementation that ensures the `ON` condition columns and the columns used for the target values are the same:
+
+### Step-by-Step Implementation
+
+1. **Define an Enum for Table Metadata:**
+   - This enum holds the table-specific metadata such as table name, columns to be inserted or updated, and the columns used for the `ON` condition.
+
+2. **Create a Method to Generate the Merge SQL Statement:**
+   - This method will construct the SQL `MERGE` statement dynamically based on the input parameters.
+
+### Example Enum and Method Implementation
+
+#### Define the Enum
+
+```java
+public enum TableMetadata {
+    USERS("users", new String[]{"id", "name", "email"}),
+    PRODUCTS("products", new String[]{"product_id", "product_name", "price"});
+
+    private final String tableName;
+    private final String[] columns;
+
+    TableMetadata(String tableName, String[] columns) {
+        this.tableName = tableName;
+        this.columns = columns;
+    }
+
+    public String getTableName() {
+        return tableName;
+    }
+
+    public String[] getColumns() {
+        return columns;
+    }
+}
+```
+
+#### Generate Merge SQL Method
+
+```java
+import java.util.StringJoiner;
+
+public class SqlMergeGenerator {
+
+    public static String generateMergeSql(TableMetadata tableMetadata) {
+        String tableName = tableMetadata.getTableName();
+        String[] columns = tableMetadata.getColumns();
+
+        StringJoiner columnJoiner = new StringJoiner(", ");
+        StringJoiner valueJoiner = new StringJoiner(", ", "(", ")");
+        StringJoiner updateJoiner = new StringJoiner(", ");
+        StringJoiner conditionJoiner = new StringJoiner(" AND ");
+
+        for (String column : columns) {
+            columnJoiner.add(column);
+            valueJoiner.add("?");
+            updateJoiner.add(column + " = source." + column);
+            conditionJoiner.add("target." + column + " = source." + column);
+        }
+
+        return "MERGE INTO " + tableName + " AS target " +
+               "USING (VALUES " + valueJoiner + ") AS source (" + columnJoiner + ") " +
+               "ON " + conditionJoiner + " " +
+               "WHEN MATCHED THEN " +
+               "UPDATE SET " + updateJoiner + " " +
+               "WHEN NOT MATCHED THEN " +
+               "INSERT (" + columnJoiner + ") " +
+               "VALUES " + valueJoiner;
+    }
+
+    public static void main(String[] args) {
+        String mergeSql = generateMergeSql(TableMetadata.USERS);
+        System.out.println(mergeSql);
+    }
+}
+```
+
+### Explanation
+
+1. **Enum `TableMetadata`:**
+   - Defines metadata for tables including table name and columns to be inserted or updated. These columns will also be used for the `ON` condition.
+
+2. **Method `generateMergeSql`:**
+   - Constructs a SQL `MERGE` statement dynamically:
+     - **Column Joiner:** Joins column names with a comma for the insert and update parts of the merge.
+     - **Value Joiner:** Creates placeholders (`?`) for the values to be inserted.
+     - **Update Joiner:** Constructs the `UPDATE SET` clause.
+     - **Condition Joiner:** Constructs the `ON` condition for matching records using the same columns as the target values.
+
+3. **Main Method:**
+   - Demonstrates generating the `MERGE` SQL for the `USERS` table defined in the `TableMetadata` enum.
+
+### Running the Code
+
+When you run the `main` method, it will print the dynamically generated `MERGE` SQL statement for the `USERS` table:
+
+```sql
+MERGE INTO users AS target 
+USING (VALUES (?, ?, ?)) AS source (id, name, email) 
+ON target.id = source.id AND target.name = source.name AND target.email = source.email 
+WHEN MATCHED THEN 
+UPDATE SET id = source.id, name = source.name, email = source.email 
+WHEN NOT MATCHED THEN 
+INSERT (id, name, email) 
+VALUES (?, ?, ?)
+```
+
+This implementation ensures that the `ON` condition columns and the target values columns are the same, making it a flexible solution for generating dynamic SQL `MERGE` statements based on table metadata.

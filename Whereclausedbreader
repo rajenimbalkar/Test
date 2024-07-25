@@ -1,0 +1,128 @@
+To create a dynamic where clause based on an enum with table, column, and value for an Apache Spark Dataset<Row>, you can follow these steps:
+
+1. Define an enum that holds table metadata, including columns and their corresponding values.
+2. Create a method that dynamically generates a where clause using this metadata.
+3. Apply this where clause to filter the Dataset<Row>.
+
+### Step-by-Step Implementation
+
+#### Define the Enum
+
+```java
+import java.util.HashMap;
+import java.util.Map;
+
+public enum TableMetadata {
+    USERS("users", new HashMap<>() {{
+        put("id", "123");
+        put("name", "John Doe");
+    }}),
+    PRODUCTS("products", new HashMap<>() {{
+        put("product_id", "456");
+        put("product_name", "Widget");
+    }});
+
+    private final String tableName;
+    private final Map<String, String> columnsAndValues;
+
+    TableMetadata(String tableName, Map<String, String> columnsAndValues) {
+        this.tableName = tableName;
+        this.columnsAndValues = columnsAndValues;
+    }
+
+    public String getTableName() {
+        return tableName;
+    }
+
+    public Map<String, String> getColumnsAndValues() {
+        return columnsAndValues;
+    }
+
+    public static TableMetadata fromTableName(String tableName) {
+        for (TableMetadata metadata : TableMetadata.values()) {
+            if (metadata.getTableName().equals(tableName)) {
+                return metadata;
+            }
+        }
+        throw new IllegalArgumentException("Table name not found in metadata: " + tableName);
+    }
+}
+```
+
+#### Create the Method to Generate the Where Clause
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class SparkFilter {
+
+    public static Dataset<Row> filterDataset(SparkSession spark, Dataset<Row> dataset, String tableName) {
+        TableMetadata metadata = TableMetadata.fromTableName(tableName);
+        Map<String, String> columnsAndValues = metadata.getColumnsAndValues();
+
+        String whereClause = columnsAndValues.entrySet().stream()
+                .map(entry -> entry.getKey() + " = '" + entry.getValue() + "'")
+                .collect(Collectors.joining(" AND "));
+
+        return dataset.where(whereClause);
+    }
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("DynamicWhereClause")
+                .master("local[*]")
+                .getOrCreate();
+
+        // Example usage
+        Dataset<Row> usersDataset = spark.read().json("path/to/users.json");
+        Dataset<Row> filteredUsers = filterDataset(spark, usersDataset, "users");
+        filteredUsers.show();
+
+        Dataset<Row> productsDataset = spark.read().json("path/to/products.json");
+        Dataset<Row> filteredProducts = filterDataset(spark, productsDataset, "products");
+        filteredProducts.show();
+
+        spark.stop();
+    }
+}
+```
+
+### Explanation
+
+1. **Enum `TableMetadata`:**
+   - Defines metadata for tables, including columns and their corresponding values.
+   - Provides methods to retrieve the table name and column values, and a static method `fromTableName` to get metadata by table name.
+
+2. **Method `filterDataset`:**
+   - Takes a `SparkSession`, `Dataset<Row>`, and a table name as parameters.
+   - Retrieves the column values for the specified table from the `TableMetadata` enum.
+   - Uses Java Streams to generate a where clause dynamically based on the column values.
+   - Applies the where clause to filter the dataset and returns the filtered dataset.
+
+3. **Main Method:**
+   - Demonstrates how to create a Spark session, load datasets, and apply the dynamic where clause using the `filterDataset` method.
+
+### Running the Code
+
+When you run the `main` method, it will read the datasets from the specified paths, apply the dynamic where clause based on the metadata defined in the enum, and display the filtered datasets:
+
+```shell
++---+--------+
+| id|    name|
++---+--------+
+|123|John Doe|
++---+--------+
+
++----------+-----------+
+|product_id|product_name|
++----------+-----------+
+|       456|      Widget|
++----------+-----------+
+```
+
+This implementation ensures that you can dynamically generate and apply where clauses based on table metadata using Apache Spark's Dataset API and Java Streams.

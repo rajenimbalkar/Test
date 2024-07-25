@@ -1,12 +1,12 @@
-To use a `List` instead of an array for storing column information in the enum, you can modify the `TableMetadata` enum and the `SqlMergeGenerator` class accordingly. Here’s how to do it:
+To use Java Streams instead of a `for` loop for constructing the SQL parts, you can take advantage of the `Collectors` class. Here’s how you can do it:
 
 ### Step-by-Step Implementation
 
-1. **Define an Enum for Table Metadata with a Map of Lists:**
-   - Store the table-specific metadata such as table name and columns to be inserted or updated in a map of lists.
+1. **Update the Enum to Store Column Metadata Using Lists:**
+   - The enum will store table names and their corresponding columns in a map.
 
-2. **Update the Method to Generate the Merge SQL Statement:**
-   - The method will retrieve the column information from the enum based on the provided table name.
+2. **Use Java Streams to Construct the SQL Parts:**
+   - Streams can be used to build the `MERGE` SQL statement dynamically.
 
 ### Example Enum and Method Implementation
 
@@ -38,11 +38,11 @@ public enum TableMetadata {
 }
 ```
 
-#### Generate Merge SQL Method
+#### Generate Merge SQL Method Using Streams
 
 ```java
 import java.util.List;
-import java.util.StringJoiner;
+import java.util.stream.Collectors;
 
 public class SqlMergeGenerator {
 
@@ -53,26 +53,29 @@ public class SqlMergeGenerator {
 
         List<String> columns = TableMetadata.INSTANCE.getColumns(tableName);
 
-        StringJoiner columnJoiner = new StringJoiner(", ");
-        StringJoiner valueJoiner = new StringJoiner(", ", "(", ")");
-        StringJoiner updateJoiner = new StringJoiner(", ");
-        StringJoiner conditionJoiner = new StringJoiner(" AND ");
+        String columnNames = columns.stream()
+                                    .collect(Collectors.joining(", "));
 
-        for (String column : columns) {
-            columnJoiner.add(column);
-            valueJoiner.add("?");
-            updateJoiner.add(column + " = source." + column);
-            conditionJoiner.add("target." + column + " = source." + column);
-        }
+        String valuePlaceholders = columns.stream()
+                                          .map(col -> "?")
+                                          .collect(Collectors.joining(", ", "(", ")"));
+
+        String updateSetClause = columns.stream()
+                                        .map(col -> col + " = source." + col)
+                                        .collect(Collectors.joining(", "));
+
+        String conditionClause = columns.stream()
+                                        .map(col -> "target." + col + " = source." + col)
+                                        .collect(Collectors.joining(" AND "));
 
         return "MERGE INTO " + tableName + " AS target " +
-               "USING (VALUES " + valueJoiner + ") AS source (" + columnJoiner + ") " +
-               "ON " + conditionJoiner + " " +
+               "USING (VALUES " + valuePlaceholders + ") AS source (" + columnNames + ") " +
+               "ON " + conditionClause + " " +
                "WHEN MATCHED THEN " +
-               "UPDATE SET " + updateJoiner + " " +
+               "UPDATE SET " + updateSetClause + " " +
                "WHEN NOT MATCHED THEN " +
-               "INSERT (" + columnJoiner + ") " +
-               "VALUES " + valueJoiner;
+               "INSERT (" + columnNames + ") " +
+               "VALUES " + valuePlaceholders;
     }
 
     public static void main(String[] args) {
@@ -93,11 +96,11 @@ public class SqlMergeGenerator {
 
 2. **Method `generateMergeSql`:**
    - Retrieves the column information from the `TableMetadata` enum based on the provided table name.
-   - Constructs a SQL `MERGE` statement dynamically:
-     - **Column Joiner:** Joins column names with a comma for the insert and update parts of the merge.
-     - **Value Joiner:** Creates placeholders (`?`) for the values to be inserted.
-     - **Update Joiner:** Constructs the `UPDATE SET` clause.
-     - **Condition Joiner:** Constructs the `ON` condition for matching records using the same columns as the target values.
+   - Constructs a SQL `MERGE` statement dynamically using Java Streams:
+     - **Column Names:** Joins column names with a comma for the insert and update parts of the merge.
+     - **Value Placeholders:** Creates placeholders (`?`) for the values to be inserted.
+     - **Update Set Clause:** Constructs the `UPDATE SET` clause.
+     - **Condition Clause:** Constructs the `ON` condition for matching records using the same columns as the target values.
 
 3. **Main Method:**
    - Demonstrates generating the `MERGE` SQL for the `users` and `products` tables defined in the `TableMetadata` enum.
@@ -126,4 +129,4 @@ INSERT (product_id, product_name, price)
 VALUES (?, ?, ?)
 ```
 
-This implementation ensures that you can dynamically generate `MERGE` SQL statements based on table names and their corresponding columns, making it flexible and easily extendable.
+This implementation ensures that you can dynamically generate `MERGE` SQL statements based on table names and their corresponding columns using Java Streams, making the code concise and more readable.

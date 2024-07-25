@@ -1,13 +1,12 @@
-To update the enum to retrieve the column information based on the string table name, we can modify the enum to store the metadata in a map. This allows us to fetch the columns dynamically based on a provided string key. Here’s how to achieve this:
+To use a `List` instead of an array for storing column information in the enum, you can modify the `TableMetadata` enum and the `SqlMergeGenerator` class accordingly. Here’s how to do it:
 
 ### Step-by-Step Implementation
 
-1. **Define an Enum for Table Metadata with a Map:**
-   - The enum will store table names and their corresponding columns in a map.
-   - Add a method to retrieve columns based on the table name.
+1. **Define an Enum for Table Metadata with a Map of Lists:**
+   - Store the table-specific metadata such as table name and columns to be inserted or updated in a map of lists.
 
 2. **Update the Method to Generate the Merge SQL Statement:**
-   - The method will fetch the column information from the enum based on the provided table name.
+   - The method will retrieve the column information from the enum based on the provided table name.
 
 ### Example Enum and Method Implementation
 
@@ -15,20 +14,21 @@ To update the enum to retrieve the column information based on the string table 
 
 ```java
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public enum TableMetadata {
     INSTANCE;
 
-    private final Map<String, String[]> tableColumnsMap;
+    private final Map<String, List<String>> tableColumnsMap;
 
     TableMetadata() {
         tableColumnsMap = new HashMap<>();
-        tableColumnsMap.put("users", new String[]{"id", "name", "email"});
-        tableColumnsMap.put("products", new String[]{"product_id", "product_name", "price"});
+        tableColumnsMap.put("users", List.of("id", "name", "email"));
+        tableColumnsMap.put("products", List.of("product_id", "product_name", "price"));
     }
 
-    public String[] getColumns(String tableName) {
+    public List<String> getColumns(String tableName) {
         return tableColumnsMap.get(tableName);
     }
 
@@ -41,6 +41,7 @@ public enum TableMetadata {
 #### Generate Merge SQL Method
 
 ```java
+import java.util.List;
 import java.util.StringJoiner;
 
 public class SqlMergeGenerator {
@@ -50,7 +51,7 @@ public class SqlMergeGenerator {
             throw new IllegalArgumentException("Table name not found in metadata: " + tableName);
         }
 
-        String[] columns = TableMetadata.INSTANCE.getColumns(tableName);
+        List<String> columns = TableMetadata.INSTANCE.getColumns(tableName);
 
         StringJoiner columnJoiner = new StringJoiner(", ");
         StringJoiner valueJoiner = new StringJoiner(", ", "(", ")");
@@ -87,7 +88,7 @@ public class SqlMergeGenerator {
 ### Explanation
 
 1. **Enum `TableMetadata`:**
-   - Stores metadata for tables in a map where the key is the table name and the value is an array of column names.
+   - Stores metadata for tables in a map where the key is the table name and the value is a list of column names.
    - Provides methods `getColumns` to retrieve columns for a given table name and `hasTable` to check if a table exists.
 
 2. **Method `generateMergeSql`:**

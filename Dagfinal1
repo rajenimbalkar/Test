@@ -1,4 +1,5 @@
 import re
+import os
 import logging
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
@@ -26,11 +27,20 @@ dag = DAG(
 
 logger = logging.getLogger(__name__)
 
+local_dir = "/path/to/local/directory"
+
 def list_files_from_s3(bucket_name, prefix):
     s3_hook = S3Hook(aws_conn_id='my_aws_conn')
     keys = s3_hook.list_keys(bucket_name=bucket_name, prefix=prefix)
     logger.info(f'Files found in S3 for prefix {prefix}: {keys}')
     return keys
+
+def download_file_from_s3(bucket_name, file_key, local_dir):
+    s3_hook = S3Hook(aws_conn_id='my_aws_conn')
+    local_file_path = os.path.join(local_dir, file_key.replace('/', '_'))
+    s3_hook.download_file(bucket_name=bucket_name, key=file_key, local_path=local_file_path)
+    logger.info(f'Downloaded {file_key} to {local_file_path}')
+    return local_file_path
 
 def insert_file_metadata_into_db(file_key):
     db2_hook = JdbcHook(jdbc_conn_id='db2_admin_jdbc')
@@ -42,14 +52,14 @@ def insert_file_metadata_into_db(file_key):
     db2_hook.run(insert_query)
     logger.info(f'Inserted metadata for file {file_name} into DB2')
 
-def process_file_with_spark(file_key, file_type):
+def process_file_with_spark(file_key, local_file_path, file_type):
     task_id = re.sub(r'[^a-zA-Z0-9]', '_', file_key)
     logger.info(f'Creating Spark task for file {file_key} of type {file_type}')
     return SparkSubmitOperator(
         task_id=f'spark_submit_{file_type}_{task_id}',
         application='/path/to/your/spark/job.jar',
         java_class='com.yourcompany.YourMainClass',
-        application_args=[file_type, file_key],
+        application_args=[file_type, local_file_path],
         conf={
             'spark.executor.extraClassPath': '/path/to/your/driver.jar',
             'spark.driver.extraClassPath': '/path/to/your/driver.jar'
@@ -89,13 +99,22 @@ def create_dynamic_tasks(prefix, **kwargs):
             dag=dag,
         )
 
+        download_file_task = PythonOperator(
+            task_id=f'download_file_{task_id}',
+            python_callable=download_file_from_s3,
+            op_kwargs={'bucket_name': bucket_name, 'file_key': file_key, 'local_dir': local_dir},
+            provide_context=True,
+            dag=dag,
+        )
+
         file_type = prefix.split('/')[-1]
-        spark_task = process_file_with_spark(file_key, file_type)
+        local_file_path = f'{local_dir}/{file_key.replace("/", "_")}'
+        spark_task = process_file_with_spark(file_key, local_file_path, file_type)
 
         email_success_task = send_email_notification(file_key, 'Success')
         email_failure_task = send_email_notification(file_key, 'Failure')
 
-        insert_metadata_task >> spark_task >> email_success_task
+        insert_metadata_task >> download_file_task >> spark_task >> email_success_task
         spark_task.on_failure_callback = email_failure_task.execute
 
 for prefix in prefixes:

@@ -1,13 +1,11 @@
 import re
 from airflow import DAG
-from airflow.decorators import task
+from airflow.operators.python_operator import PythonOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.providers.jdbc.hooks.jdbc import JdbcHook
 from airflow.providers.smtp.operators.smtp import EmailOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.utils.dates import days_ago
-from airflow.operators.python import PythonOperator, get_current_context
-from airflow.utils.task_group import TaskGroup
 
 default_args = {
     'owner': 'airflow',
@@ -66,32 +64,28 @@ def send_email_notification(file_key, status):
 bucket_name = 'your_bucket_name'
 prefixes = ['input/filetype1', 'input/filetype2']
 
+def create_dynamic_tasks(prefix):
+    file_keys = list_files_from_s3(bucket_name, prefix)
+    for file_key in file_keys:
+        task_id = re.sub(r'[^a-zA-Z0-9]', '_', file_key)
+
+        insert_metadata_task = PythonOperator(
+            task_id=f'insert_metadata_{task_id}',
+            python_callable=insert_file_metadata_into_db,
+            op_kwargs={'file_key': file_key},
+            dag=dag,
+        )
+
+        file_type = prefix.split('/')[-1]
+        spark_task = process_file_with_spark(file_key, file_type)
+
+        email_success_task = send_email_notification(file_key, 'Success')
+        email_failure_task = send_email_notification(file_key, 'Failure')
+
+        # Define task dependencies
+        insert_metadata_task >> spark_task
+        spark_task >> email_success_task
+        spark_task.on_failure_callback = email_failure_task.execute
+
 for prefix in prefixes:
-    @task(task_id=f'list_files_{prefix.replace("/", "_")}', dag=dag)
-    def list_files_task():
-        keys = list_files_from_s3(bucket_name, prefix)
-        return keys
-
-    @task(task_id=f'create_dynamic_tasks_{prefix.replace("/", "_")}', dag=dag)
-    def create_dynamic_tasks(file_keys):
-        for file_key in file_keys:
-            insert_metadata_task = PythonOperator(
-                task_id=f'insert_metadata_{re.sub(r"[^a-zA-Z0-9]", "_", file_key)}',
-                python_callable=insert_file_metadata_into_db,
-                op_kwargs={'file_key': file_key},
-                dag=dag,
-            )
-
-            file_type = prefix.split('/')[-1]
-            spark_task = process_file_with_spark(file_key, file_type)
-
-            email_success_task = send_email_notification(file_key, 'Success')
-            email_failure_task = send_email_notification(file_key, 'Failure')
-
-            # Define task dependencies
-            list_files_task() >> insert_metadata_task >> spark_task
-            spark_task >> email_success_task
-            spark_task.on_failure_callback = email_failure_task.execute
-
-    list_files_output = list_files_task()
-    create_dynamic_tasks(list_files_output)
+    create_dynamic_tasks(prefix)

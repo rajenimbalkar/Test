@@ -1,0 +1,131 @@
+Here's how you can set up an Apache Airflow DAG that reads files from an S3 bucket with different input folders, processes each file using a SparkSubmitOperator that calls a Spring Boot Java application, and handles the entire workflow including database updates and email notifications.
+
+### Prerequisites
+1. Airflow with necessary providers installed: `apache-airflow-providers-amazon`, `apache-airflow-providers-apache-spark`, and `apache-airflow-providers-jdbc`.
+2. Access to an S3 bucket and DB2 database.
+3. SMTP server for sending emails.
+
+### Example DAG
+
+```python
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.providers.jdbc.operators.jdbc import JdbcOperator
+from airflow.providers.smtp.operators.smtp import EmailOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.utils.dates import days_ago
+
+default_args = {
+    'owner': 'airflow',
+    'start_date': days_ago(1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+}
+
+dag = DAG(
+    's3_to_spark_with_db2_and_email',
+    default_args=default_args,
+    description='Read files from S3, process with Spark, update DB2, and send email notifications',
+    schedule_interval=None,
+)
+
+def list_files_from_s3(bucket_name, prefix):
+    s3_hook = S3Hook(aws_conn_id='my_aws_conn')
+    keys = s3_hook.list_keys(bucket_name=bucket_name, prefix=prefix)
+    return keys
+
+def insert_file_metadata_into_db(file_key, **kwargs):
+    db2_hook = JdbcHook(jdbc_conn_id='db2_admin_jdbc')
+    file_path, file_name = file_key.rsplit('/', 1)
+    insert_query = f"""
+    INSERT INTO your_table (file_path, file_name, status)
+    VALUES ('{file_path}', '{file_name}', 'read')
+    """
+    db2_hook.run(insert_query)
+
+def process_file_with_spark(file_key, file_type):
+    return SparkSubmitOperator(
+        task_id=f'spark_submit_{file_type}_{file_key}',
+        application='/path/to/your/spark/job.jar',
+        java_class='com.yourcompany.YourMainClass',
+        application_args=[file_type, file_key],
+        conf={
+            'spark.executor.extraClassPath': '/path/to/your/driver.jar',
+            'spark.driver.extraClassPath': '/path/to/your/driver.jar'
+        },
+        dag=dag
+    )
+
+def send_email_notification(file_key, status):
+    return EmailOperator(
+        task_id=f'send_email_{file_key}',
+        to='your_email@example.com',
+        subject=f'File {file_key} Processing {status}',
+        html_content=f'The file {file_key} has been processed with status: {status}',
+        dag=dag
+    )
+
+# Define S3 bucket and file prefixes
+bucket_name = 'your_bucket_name'
+prefixes = ['input/filetype1', 'input/filetype2']
+
+# Create dynamic tasks
+for prefix in prefixes:
+    list_files_task = PythonOperator(
+        task_id=f'list_files_{prefix}',
+        python_callable=list_files_from_s3,
+        op_kwargs={'bucket_name': bucket_name, 'prefix': prefix},
+        dag=dag,
+    )
+
+    for file_key in list_files_task.output:
+        insert_metadata_task = PythonOperator(
+            task_id=f'insert_metadata_{file_key}',
+            python_callable=insert_file_metadata_into_db,
+            op_kwargs={'file_key': file_key},
+            dag=dag,
+        )
+
+        file_type = prefix.split('/')[-1]
+        spark_task = process_file_with_spark(file_key, file_type)
+
+        email_success_task = send_email_notification(file_key, 'Success')
+        email_failure_task = send_email_notification(file_key, 'Failure')
+
+        # Define task dependencies
+        list_files_task >> insert_metadata_task >> spark_task
+        spark_task >> email_success_task
+        spark_task.on_failure_callback = email_failure_task.execute
+```
+
+### Explanation
+
+1. **List Files from S3:** 
+   - The `list_files_from_s3` function uses the `S3Hook` to list keys from S3. Each file key is then processed dynamically.
+
+2. **Insert File Metadata into DB2:**
+   - The `insert_file_metadata_into_db` function uses the `JdbcHook` to insert metadata about the file into DB2, indicating that the file has been read.
+
+3. **Process File with Spark:**
+   - The `process_file_with_spark` function defines a `SparkSubmitOperator` to run a Spark job. This job calls your Spring Boot Java application and passes the file type and file path as arguments.
+
+4. **Send Email Notification:**
+   - The `send_email_notification` function creates an `EmailOperator` task to send email notifications upon success or failure of the Spark job.
+
+### Additional Configurations
+
+1. **AWS Connection:**
+   - Set up an AWS connection (`aws_conn_id='my_aws_conn'`) in the Airflow UI under "Admin" -> "Connections". Provide the necessary AWS credentials.
+
+2. **DB2 Connection:**
+   - Set up a JDBC connection (`jdbc_conn_id='db2_admin_jdbc'`) in the Airflow UI with the DB2 database credentials.
+
+3. **Email Configuration:**
+   - Configure the SMTP settings in the `airflow.cfg` file or via environment variables to enable sending emails.
+
+4. **Dynamic Task Generation:**
+   - The example above demonstrates generating tasks dynamically based on S3 file keys. Adjust the logic to fit your specific requirements.
+
+With this setup, you have a robust Airflow DAG that handles reading files from S3, processing them with Spark, updating DB2, and sending email notifications based on the processing status.

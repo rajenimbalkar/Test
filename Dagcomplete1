@@ -1,0 +1,160 @@
+To include email notifications and DB2 insert/update operations within Apache Airflow, we'll modify the Airflow DAG to handle these tasks instead of the Spring Boot application. Here's a step-by-step guide to achieve this:
+
+### Step 1: Spring Boot Application
+
+The Spring Boot application will focus solely on processing the file. The DB2 updates and email notifications will be handled by Airflow.
+
+#### `Application.java`
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application implements CommandLineRunner {
+
+    @Autowired
+    private FileProcessorService fileProcessorService;
+
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        String fileKey = args[0];
+        String fileType = args[1];
+
+        boolean success = fileProcessorService.processFile(fileKey, fileType);
+        System.exit(success ? 0 : 1);
+    }
+}
+```
+
+### Step 2: Airflow DAG
+
+We'll create an Airflow DAG that includes tasks for S3 file reading, Spark job submission, DB2 insert/update, and email notifications.
+
+#### Airflow Configuration
+
+Ensure your Airflow instance has the necessary connections configured for S3, DB2, and SMTP.
+
+#### DAG Definition
+
+```python
+from airflow import DAG
+from airflow.providers.amazon.aws.sensors.s3_key import S3KeySensor
+from airflow.providers.amazon.aws.operators.s3_list import S3ListOperator
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.operators.python import PythonOperator
+from airflow.hooks.base_hook import BaseHook
+from airflow.providers.smtplib.operators.email import EmailOperator
+from airflow.providers.jdbc.operators.jdbc import JdbcOperator
+from airflow.utils.dates import days_ago
+from datetime import timedelta
+import boto3
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+dag = DAG(
+    'dynamic_spark_submit_s3',
+    default_args=default_args,
+    description='DAG to read files from S3, process with Spark and update DB2',
+    schedule_interval=timedelta(days=1),
+    start_date=days_ago(1),
+)
+
+BUCKET_NAME = 'your_bucket_name'
+INBOX_FOLDER = 'inbox/foldername/'
+
+def list_s3_files(bucket_name, prefix, **kwargs):
+    s3 = boto3.client('s3')
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    if 'Contents' in response:
+        file_list = [content['Key'] for content in response['Contents']]
+        return file_list
+    return []
+
+list_files_task = PythonOperator(
+    task_id='list_s3_files',
+    python_callable=list_s3_files,
+    op_kwargs={'bucket_name': BUCKET_NAME, 'prefix': INBOX_FOLDER},
+    provide_context=True,
+    dag=dag,
+)
+
+def insert_db_status(**kwargs):
+    ti = kwargs['ti']
+    file_key = ti.xcom_pull(task_ids='list_s3_files')
+    query = f"INSERT INTO file_status (file_key, status) VALUES ('{file_key}', 'read')"
+    return query
+
+insert_status_task = JdbcOperator(
+    task_id='insert_db_status',
+    sql=insert_db_status,
+    jdbc_conn_id='db2_conn_id',
+    autocommit=True,
+    dag=dag,
+)
+
+def update_db_status(file_key, status):
+    return f"UPDATE file_status SET status='{status}' WHERE file_key='{file_key}'"
+
+def send_email_notification(file_key, status):
+    return {
+        'subject': f"File Processing Status: {status}",
+        'to': 'recipient@example.com',
+        'body': f"The file with key {file_key} has status: {status}"
+    }
+
+for file_type in ['filetype1', 'filetype2']:
+    process_task = SparkSubmitOperator(
+        task_id=f'process_{file_type}',
+        application='path/to/your/springbootapp.jar',
+        java_class='com.example.Application',
+        application_args=[f'{INBOX_FOLDER}{file_type}', file_type],
+        dag=dag,
+    )
+
+    update_status_task = PythonOperator(
+        task_id=f'update_status_{file_type}',
+        python_callable=update_db_status,
+        op_kwargs={'file_key': f'{INBOX_FOLDER}{file_type}', 'status': 'success'},
+        dag=dag,
+    )
+
+    email_task = EmailOperator(
+        task_id=f'send_email_{file_type}',
+        to='recipient@example.com',
+        subject=f"File Processing Status: {file_type}",
+        html_content=f"The file with key {INBOX_FOLDER}{file_type} has been processed successfully.",
+        dag=dag,
+    )
+
+    list_files_task >> insert_status_task >> process_task >> update_status_task >> email_task
+
+dag.doc_md = __doc__
+```
+
+### Step 3: Setting Up Airflow Connections
+
+- **S3 Connection:** Configure an S3 connection in Airflow.
+- **DB2 Connection:** Configure a JDBC connection for DB2 in Airflow.
+- **SMTP Connection:** Configure an SMTP connection for email in Airflow.
+
+### Step 4: Ensure Proper Environment Variables
+
+Make sure that the `SPARK_HOME` environment variable is set in your Airflow environment.
+
+### Conclusion
+
+This setup demonstrates how to integrate Airflow with Spark and DB2, handling the processing of files, database updates, and email notifications within the Airflow DAG. The Spring Boot application is used purely for file processing, and its status is communicated back to Airflow to manage subsequent tasks.

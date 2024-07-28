@@ -1,0 +1,97 @@
+import re
+from airflow import DAG
+from airflow.decorators import task
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.providers.jdbc.hooks.jdbc import JdbcHook
+from airflow.providers.smtp.operators.smtp import EmailOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.utils.dates import days_ago
+from airflow.operators.python import PythonOperator, get_current_context
+from airflow.utils.task_group import TaskGroup
+
+default_args = {
+    'owner': 'airflow',
+    'start_date': days_ago(1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+}
+
+dag = DAG(
+    's3_to_spark_with_db2_and_email',
+    default_args=default_args,
+    description='Read files from S3, process with Spark, update DB2, and send email notifications',
+    schedule_interval=None,
+)
+
+def list_files_from_s3(bucket_name, prefix):
+    s3_hook = S3Hook(aws_conn_id='my_aws_conn')
+    keys = s3_hook.list_keys(bucket_name=bucket_name, prefix=prefix)
+    return keys
+
+def insert_file_metadata_into_db(file_key):
+    db2_hook = JdbcHook(jdbc_conn_id='db2_admin_jdbc')
+    file_path, file_name = file_key.rsplit('/', 1)
+    insert_query = f"""
+    INSERT INTO your_table (file_path, file_name, status)
+    VALUES ('{file_path}', '{file_name}', 'read')
+    """
+    db2_hook.run(insert_query)
+
+def process_file_with_spark(file_key, file_type):
+    task_id = re.sub(r'[^a-zA-Z0-9]', '_', file_key)
+    return SparkSubmitOperator(
+        task_id=f'spark_submit_{file_type}_{task_id}',
+        application='/path/to/your/spark/job.jar',
+        java_class='com.yourcompany.YourMainClass',
+        application_args=[file_type, file_key],
+        conf={
+            'spark.executor.extraClassPath': '/path/to/your/driver.jar',
+            'spark.driver.extraClassPath': '/path/to/your/driver.jar'
+        },
+        dag=dag
+    )
+
+def send_email_notification(file_key, status):
+    task_id = re.sub(r'[^a-zA-Z0-9]', '_', file_key)
+    return EmailOperator(
+        task_id=f'send_email_{task_id}',
+        to='your_email@example.com',
+        subject=f'File {file_key} Processing {status}',
+        html_content=f'The file {file_key} has been processed with status: {status}',
+        dag=dag
+    )
+
+# Define S3 bucket and file prefixes
+bucket_name = 'your_bucket_name'
+prefixes = ['input/filetype1', 'input/filetype2']
+
+for prefix in prefixes:
+    @task(task_id=f'list_files_{prefix.replace("/", "_")}', dag=dag)
+    def list_files_task():
+        keys = list_files_from_s3(bucket_name, prefix)
+        return keys
+
+    @task(task_id=f'create_dynamic_tasks_{prefix.replace("/", "_")}', dag=dag)
+    def create_dynamic_tasks(file_keys):
+        for file_key in file_keys:
+            insert_metadata_task = PythonOperator(
+                task_id=f'insert_metadata_{re.sub(r"[^a-zA-Z0-9]", "_", file_key)}',
+                python_callable=insert_file_metadata_into_db,
+                op_kwargs={'file_key': file_key},
+                dag=dag,
+            )
+
+            file_type = prefix.split('/')[-1]
+            spark_task = process_file_with_spark(file_key, file_type)
+
+            email_success_task = send_email_notification(file_key, 'Success')
+            email_failure_task = send_email_notification(file_key, 'Failure')
+
+            # Define task dependencies
+            list_files_task() >> insert_metadata_task >> spark_task
+            spark_task >> email_success_task
+            spark_task.on_failure_callback = email_failure_task.execute
+
+    list_files_output = list_files_task()
+    create_dynamic_tasks(list_files_output)

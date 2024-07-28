@@ -1,6 +1,6 @@
 import re
 from airflow import DAG
-from airflow.operators.python_operator import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.providers.jdbc.hooks.jdbc import JdbcHook
 from airflow.providers.smtp.operators.smtp import EmailOperator
@@ -60,6 +60,10 @@ def send_email_notification(file_key, status):
         dag=dag
     )
 
+def check_files_exist(bucket_name, prefix):
+    keys = list_files_from_s3(bucket_name, prefix)
+    return bool(keys)
+
 # Define S3 bucket and file prefixes
 bucket_name = 'your_bucket_name'
 prefixes = ['input/filetype1', 'input/filetype2']
@@ -88,4 +92,18 @@ def create_dynamic_tasks(prefix):
         spark_task.on_failure_callback = email_failure_task.execute
 
 for prefix in prefixes:
-    create_dynamic_tasks(prefix)
+    check_files_task = ShortCircuitOperator(
+        task_id=f'check_files_exist_{prefix.replace("/", "_")}',
+        python_callable=check_files_exist,
+        op_kwargs={'bucket_name': bucket_name, 'prefix': prefix},
+        dag=dag
+    )
+
+    dynamic_tasks = PythonOperator(
+        task_id=f'create_dynamic_tasks_{prefix.replace("/", "_")}',
+        python_callable=create_dynamic_tasks,
+        op_args=[prefix],
+        dag=dag
+    )
+
+    check_files_task >> dynamic_tasks

@@ -1,0 +1,150 @@
+To create a simple Spring Boot application that can be executed in YARN mode using Spark, you need to set up a project that includes dependencies for both Spring Boot and Spark, read a file from the classpath, and package it into a JAR that can be submitted using `spark-submit`.
+
+### Project Setup
+
+1. **Maven Dependencies**:
+   Your `pom.xml` should include dependencies for Spring Boot, Spark, and any other required libraries.
+
+2. **Application Structure**:
+   - **Main Class**: Entry point for the Spring Boot application.
+   - **Spark Configuration**: Configuration for Spark to run in YARN mode.
+   - **File Reading**: Code to read a file from the classpath.
+
+### Sample `pom.xml`
+
+Here’s a basic `pom.xml` with necessary dependencies:
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>springboot-spark-yarn</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.0.0</version> <!-- Choose the appropriate version -->
+    </parent>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-core_2.12</artifactId>
+            <version>3.0.1</version> <!-- Choose the appropriate version -->
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.12</artifactId>
+            <version>3.0.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client</artifactId>
+            <version>3.2.0</version> <!-- Match your Hadoop version -->
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+### Application Code
+
+**Main Application Class**
+
+This class initializes the Spring Boot application and sets up the Spark context.
+
+```java
+package com.example.springboot;
+
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+
+@SpringBootApplication
+public class SparkApplication implements CommandLineRunner {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SparkApplication.class, args);
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        // Configure Spark
+        SparkConf sparkConf = new SparkConf().setAppName("Spring Boot Spark App")
+                .setMaster("yarn"); // Use "yarn" for YARN mode, or specify "local" for local mode
+        JavaSparkContext sc = new JavaSparkContext(sparkConf);
+        SparkSession spark = SparkSession.builder().sparkContext(sc.sc()).getOrCreate();
+
+        // Read a file from classpath
+        String filePath = "classpath:file.txt"; // Replace with your file's name
+        String content = new String(Files.readAllBytes(Paths.get(ClassLoader.getSystemResource(filePath).toURI())));
+        System.out.println("File Content: " + content);
+
+        // Your Spark operations go here
+        // For example, reading a dataset and performing transformations
+
+        // Stop the context
+        sc.stop();
+    }
+}
+```
+
+### File Reading
+
+To read a file from the classpath:
+
+1. **Add the File**: Place `file.txt` or any required file in the `src/main/resources` directory of your project.
+
+2. **Reading the File**: The code snippet in the `run` method reads the content of the file using `Files.readAllBytes(Paths.get(ClassLoader.getSystemResource(filePath).toURI()))`.
+
+### Packaging the JAR
+
+1. **Build the Project**: Use Maven to build the project and create a JAR file. Run:
+
+   ```sh
+   mvn clean package
+   ```
+
+   This command generates a JAR file in the `target` directory, typically named something like `springboot-spark-yarn-1.0.0.jar`.
+
+### Running the JAR with Spark
+
+To run the application on a YARN cluster using `spark-submit`, use the following command:
+
+```sh
+spark-submit --class com.example.springboot.SparkApplication \
+  --master yarn \
+  --deploy-mode cluster \
+  target/springboot-spark-yarn-1.0.0.jar
+```
+
+### Notes
+
+1. **YARN and Hadoop Configuration**: Ensure your Hadoop and YARN configurations are correctly set up and accessible in the environment where you're running `spark-submit`.
+
+2. **Dependencies and Shading**: The JAR produced by Spring Boot may contain unnecessary dependencies for Spark. Consider using the Maven Shade Plugin or similar tools to include only necessary dependencies.
+
+3. **Spark Configuration**: Adjust the Spark configuration (e.g., `executorMemory`, `numExecutors`) according to your cluster setup and the requirements of your application.
+
+This setup gives you a basic Spring Boot application that reads a file from the classpath and runs in YARN mode using Spark. You can extend this setup with more complex Spark jobs, additional Spring components, and further configuration as needed.

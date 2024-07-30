@@ -1,150 +1,131 @@
-To create a simple Spring Boot application that can be executed in YARN mode using Spark, you need to set up a project that includes dependencies for both Spring Boot and Spark, read a file from the classpath, and package it into a JAR that can be submitted using `spark-submit`.
+To read JSON data in a Spark application, you can use the `SparkSession` object's `read` method, which provides a convenient way to load JSON files into a DataFrame. Below is a step-by-step guide and an example:
 
-### Project Setup
+### JSON Data Example
 
-1. **Maven Dependencies**:
-   Your `pom.xml` should include dependencies for Spring Boot, Spark, and any other required libraries.
+Let's assume you have a JSON file `people.json` with the following content:
 
-2. **Application Structure**:
-   - **Main Class**: Entry point for the Spring Boot application.
-   - **Spark Configuration**: Configuration for Spark to run in YARN mode.
-   - **File Reading**: Code to read a file from the classpath.
-
-### Sample `pom.xml`
-
-Here’s a basic `pom.xml` with necessary dependencies:
-
-```xml
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    <groupId>com.example</groupId>
-    <artifactId>springboot-spark-yarn</artifactId>
-    <version>1.0.0</version>
-    <packaging>jar</packaging>
-
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.0.0</version> <!-- Choose the appropriate version -->
-    </parent>
-
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.spark</groupId>
-            <artifactId>spark-core_2.12</artifactId>
-            <version>3.0.1</version> <!-- Choose the appropriate version -->
-        </dependency>
-        <dependency>
-            <groupId>org.apache.spark</groupId>
-            <artifactId>spark-sql_2.12</artifactId>
-            <version>3.0.1</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-client</artifactId>
-            <version>3.2.0</version> <!-- Match your Hadoop version -->
-        </dependency>
-    </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-        </plugins>
-    </build>
-</project>
+```json
+[
+  {
+    "name": "John Doe",
+    "age": 30,
+    "email": "john.doe@example.com"
+  },
+  {
+    "name": "Jane Smith",
+    "age": 25,
+    "email": "jane.smith@example.com"
+  }
+]
 ```
 
-### Application Code
+This JSON file contains an array of JSON objects, each representing a person with `name`, `age`, and `email` fields.
 
-**Main Application Class**
+### Reading JSON in a Spark Application
 
-This class initializes the Spring Boot application and sets up the Spark context.
+#### Setting Up the Spark Application
+
+First, ensure you have the necessary Maven dependencies for Spark in your `pom.xml`:
+
+```xml
+<dependencies>
+    <!-- Spark Core -->
+    <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-core_2.12</artifactId>
+        <version>3.0.1</version>
+    </dependency>
+    <!-- Spark SQL -->
+    <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-sql_2.12</artifactId>
+        <version>3.0.1</version>
+    </dependency>
+</dependencies>
+```
+
+#### Sample Code to Read JSON
+
+Here is a simple Spark application that reads the `people.json` file and displays its contents:
 
 ```java
 package com.example.springboot;
 
-import org.apache.spark.SparkConf;
-import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 
 @SpringBootApplication
-public class SparkApplication implements CommandLineRunner {
+public class SparkJsonApplication implements CommandLineRunner {
 
     public static void main(String[] args) {
-        SpringApplication.run(SparkApplication.class, args);
+        SpringApplication.run(SparkJsonApplication.class, args);
     }
 
     @Override
-    public void run(String... args) throws Exception {
-        // Configure Spark
-        SparkConf sparkConf = new SparkConf().setAppName("Spring Boot Spark App")
-                .setMaster("yarn"); // Use "yarn" for YARN mode, or specify "local" for local mode
-        JavaSparkContext sc = new JavaSparkContext(sparkConf);
-        SparkSession spark = SparkSession.builder().sparkContext(sc.sc()).getOrCreate();
+    public void run(String... args) {
+        // Create Spark Session
+        SparkSession spark = SparkSession.builder()
+                .appName("Spark JSON Reader")
+                .master("local") // Use "yarn" for YARN mode
+                .getOrCreate();
 
-        // Read a file from classpath
-        String filePath = "classpath:file.txt"; // Replace with your file's name
-        String content = new String(Files.readAllBytes(Paths.get(ClassLoader.getSystemResource(filePath).toURI())));
-        System.out.println("File Content: " + content);
+        // Read JSON file into DataFrame
+        Dataset<Row> peopleDF = spark.read().json("src/main/resources/people.json");
 
-        // Your Spark operations go here
-        // For example, reading a dataset and performing transformations
+        // Show the DataFrame content
+        peopleDF.show();
 
-        // Stop the context
-        sc.stop();
+        // Print the schema
+        peopleDF.printSchema();
+
+        // Stop the Spark session
+        spark.stop();
     }
 }
 ```
 
-### File Reading
+### Explanation
 
-To read a file from the classpath:
+1. **SparkSession Creation**:
+   - `SparkSession.builder()`: This is used to create a `SparkSession` object, which is the entry point for using DataFrame and SQL functionalities in Spark.
+   - `.appName("Spark JSON Reader")`: Sets the application name.
+   - `.master("local")`: Specifies that the Spark application runs locally. Use `"yarn"` for YARN mode.
 
-1. **Add the File**: Place `file.txt` or any required file in the `src/main/resources` directory of your project.
+2. **Reading JSON File**:
+   - `spark.read().json("src/main/resources/people.json")`: Reads the JSON file located in the `src/main/resources` directory into a `DataFrame`. The path can also point to an HDFS location if running in a cluster.
 
-2. **Reading the File**: The code snippet in the `run` method reads the content of the file using `Files.readAllBytes(Paths.get(ClassLoader.getSystemResource(filePath).toURI()))`.
+3. **Displaying the Data**:
+   - `peopleDF.show()`: Displays the content of the DataFrame.
+   - `peopleDF.printSchema()`: Prints the schema of the DataFrame, showing the structure of the JSON data.
 
-### Packaging the JAR
+4. **Stopping the Spark Session**:
+   - `spark.stop()`: Stops the Spark session, releasing any resources held by it.
 
-1. **Build the Project**: Use Maven to build the project and create a JAR file. Run:
+### Handling Complex JSON
 
+If your JSON data is more complex (nested structures), Spark's DataFrame API provides ways to handle it. You can use methods like `select`, `explode`, and nested column expressions to work with complex and nested JSON data.
+
+### Running the Application
+
+1. **Build the Project**: Use Maven to build the JAR file:
    ```sh
    mvn clean package
    ```
 
-   This command generates a JAR file in the `target` directory, typically named something like `springboot-spark-yarn-1.0.0.jar`.
+2. **Run Locally**: You can run the application locally using:
+   ```sh
+   java -jar target/springboot-spark-yarn-1.0.0.jar
+   ```
 
-### Running the JAR with Spark
+3. **Run on a Cluster**: To run on a YARN cluster, use the `spark-submit` command:
+   ```sh
+   spark-submit --class com.example.springboot.SparkJsonApplication \
+     --master yarn \
+     target/springboot-spark-yarn-1.0.0.jar
+   ```
 
-To run the application on a YARN cluster using `spark-submit`, use the following command:
-
-```sh
-spark-submit --class com.example.springboot.SparkApplication \
-  --master yarn \
-  --deploy-mode cluster \
-  target/springboot-spark-yarn-1.0.0.jar
-```
-
-### Notes
-
-1. **YARN and Hadoop Configuration**: Ensure your Hadoop and YARN configurations are correctly set up and accessible in the environment where you're running `spark-submit`.
-
-2. **Dependencies and Shading**: The JAR produced by Spring Boot may contain unnecessary dependencies for Spark. Consider using the Maven Shade Plugin or similar tools to include only necessary dependencies.
-
-3. **Spark Configuration**: Adjust the Spark configuration (e.g., `executorMemory`, `numExecutors`) according to your cluster setup and the requirements of your application.
-
-This setup gives you a basic Spring Boot application that reads a file from the classpath and runs in YARN mode using Spark. You can extend this setup with more complex Spark jobs, additional Spring components, and further configuration as needed.
+This basic example demonstrates how to read a JSON file into a DataFrame and perform basic operations on it using Apache Spark and Spring Boot. You can extend this with more complex data transformations and actions as needed for your specific use case.

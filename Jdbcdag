@@ -1,0 +1,36 @@
+from airflow import DAG
+from airflow.providers.jdbc.hooks.jdbc import JdbcHook
+from airflow.providers.jdbc.operators.jdbc import JdbcOperator
+from airflow.utils.dates import days_ago
+
+# Default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'start_date': days_ago(1),
+}
+
+# Define the DAG
+dag = DAG(
+    'db2_insert_example',
+    default_args=default_args,
+    description='A simple DAG to insert a record into a DB2 table',
+    schedule_interval=None,
+)
+
+# Define the SQL query to insert a record into the DB2 table
+sql_insert = """
+INSERT INTO your_table_name (column1, column2, column3)
+VALUES ('value1', 'value2', 'value3');
+"""
+
+# Define the JdbcOperator task
+insert_record_task = JdbcOperator(
+    task_id='insert_record_task',
+    sql=sql_insert,
+    jdbc_conn_id='db2_default',  # The connection ID you defined in Airflow
+    autocommit=True,
+    dag=dag
+)
+
+# Define task dependencies if needed
+# For this example, it's a single task, so no dependencies are defined

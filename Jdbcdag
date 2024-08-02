@@ -34,3 +34,6 @@ insert_record_task = JdbcOperator(
 
 # Define task dependencies if needed
 # For this example, it's a single task, so no dependencies are defined
+{
+  "extra__jdbc__classpath": "/path/to/db2jcc4.jar"
+}

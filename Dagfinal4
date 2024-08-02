@@ -1,0 +1,154 @@
+import boto3
+import logging
+from airflow import DAG
+from airflow.providers.amazon.aws.sensors.s3_key import S3KeySensor
+from airflow.providers.amazon.aws.operators.s3_list import S3ListOperator
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.operators.python import PythonOperator
+from airflow.providers.jdbc.hooks.jdbc import JdbcHook
+from airflow.utils.email import send_email
+from datetime import datetime
+
+# Default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'start_date': datetime(2024, 8, 1),
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'email': ['your_email@example.com'],  # Replace with your email
+    'retries': 1,
+}
+
+# S3 Configuration
+BUCKET_NAME = 'your-bucket-name'
+INPUT_PATH = 'input'
+OUTPUT_PATH = 'output'
+
+# Define the DAG
+with DAG(dag_id='process_s3_files_spark_db2',
+         default_args=default_args,
+         schedule_interval='@daily',
+         catchup=False) as dag:
+
+    # Setup logging
+    logger = logging.getLogger("airflow.task")
+
+    # Function to insert record into DB2 database
+    def insert_file_record(file_name, file_type, status):
+        logger.info(f"Inserting record into DB2 database for file: {file_name}, type: {file_type}, status: {status}")
+        jdbc_hook = JdbcHook(jdbc_conn_id='db2_jdbc_conn')
+        conn = jdbc_hook.get_conn()
+        cursor = conn.cursor()
+        insert_sql = """
+        INSERT INTO file_process_log (file_name, file_type, status, processed_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """
+        cursor.execute(insert_sql, (file_name, file_type, status))
+        conn.commit()
+        cursor.close()
+        logger.info(f"Record inserted successfully for file: {file_name}, type: {file_type}")
+
+    # Function to move files and log status into the database
+    def move_and_log_file(file_name, file_type):
+        s3 = boto3.client('s3')
+        source = f'{INPUT_PATH}/{file_type}/{file_name}'
+        destination = f'{OUTPUT_PATH}/{file_type}/{file_name}'
+
+        try:
+            # Move file
+            logger.info(f"Moving file from {source} to {destination}")
+            s3.copy_object(Bucket=BUCKET_NAME, CopySource={'Bucket': BUCKET_NAME, 'Key': source}, Key=destination)
+            s3.delete_object(Bucket=BUCKET_NAME, Key=source)
+            logger.info(f"File moved successfully from {source} to {destination}")
+
+            # Log success to database
+            insert_file_record(file_name, file_type, 'processed')
+        except Exception as e:
+            logger.error(f"Error while moving file {file_name} of type {file_type}: {str(e)}")
+            # Log failure to database
+            insert_file_record(file_name, file_type, 'failed')
+            raise
+
+    # Function to send email notification
+    def send_notification(**kwargs):
+        ti = kwargs['ti']
+        message = "The file processing DAG has completed. Check the logs for more details."
+        # Customize the message based on task instance details, e.g., success or failure
+        send_email(to="your_email@example.com", subject="DAG Execution Status", html_content=message)
+
+    # S3KeySensor to check for file presence in S3 (optional)
+    wait_for_files = S3KeySensor(
+        task_id='wait_for_files',
+        bucket_key=f'{INPUT_PATH}/*/*',
+        wildcard_match=True,
+        bucket_name=BUCKET_NAME,
+        timeout=600,
+        poke_interval=60,
+        aws_conn_id='aws_default'
+    )
+
+    # List files in S3 for different types
+    list_files = S3ListOperator(
+        task_id='list_files',
+        bucket=BUCKET_NAME,
+        prefix=INPUT_PATH,
+        delimiter='/',
+        aws_conn_id='aws_default'
+    )
+
+    # Example function to process files based on type and run Spark job
+    def process_file_type(file_type, file_name):
+        return SparkSubmitOperator(
+            task_id=f'spark_submit_{file_type}_{file_name}',
+            application='s3://your-bucket/path/to/your-spark-application.jar',
+            name=f'process_{file_type}',
+            conn_id='spark_default',  # Replace with your Spark connection ID
+            application_args=[f's3://{BUCKET_NAME}/{INPUT_PATH}/{file_type}/{file_name}'],
+            conf={
+                'spark.executor.memory': '2g',
+                'spark.driver.memory': '1g',
+                'spark.hadoop.fs.s3a.impl': 'org.apache.hadoop.fs.s3a.S3AFileSystem',
+                'spark.hadoop.fs.s3a.access.key': '{{ var.value.AWS_ACCESS_KEY_ID }}',
+                'spark.hadoop.fs.s3a.secret.key': '{{ var.value.AWS_SECRET_ACCESS_KEY }}',
+                'spark.hadoop.fs.s3a.endpoint': 's3.amazonaws.com'
+            },
+            packages='org.apache.hadoop:hadoop-aws:3.2.0',
+            deploy_mode='cluster',
+            verbose=True
+        )
+
+    # Dynamically create tasks for each file type and file
+    for file_type in ['file1', 'file2', 'filen']:  # Define your file types
+        list_task = S3ListOperator(
+            task_id=f'list_{file_type}_files',
+            bucket=BUCKET_NAME,
+            prefix=f'{INPUT_PATH}/{file_type}/',
+            delimiter='/',
+            aws_conn_id='aws_default'
+        )
+        
+        # Set list_task dependencies
+        list_task.set_upstream(list_files)
+
+        # Creating Spark submit and file move tasks dynamically
+        for file_name in list_task:
+            spark_task = process_file_type(file_type, file_name)
+            move_task = PythonOperator(
+                task_id=f'move_log_{file_type}_{file_name}',
+                python_callable=move_and_log_file,
+                op_kwargs={'file_name': file_name, 'file_type': file_type}
+            )
+
+            # Set task dependencies
+            spark_task.set_upstream(list_task)
+            move_task.set_upstream(spark_task)
+
+    # Notify on completion
+    notify = PythonOperator(
+        task_id='notify',
+        python_callable=send_notification,
+        provide_context=True
+    )
+
+    # Set final dependencies
+    move_task >> notify

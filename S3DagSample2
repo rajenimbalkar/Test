@@ -1,18 +1,27 @@
-The error message "String indices must be integers" suggests that somewhere in the code, a string is being indexed with another string instead of an integer. This typically happens when trying to access characters in a string using a string key, which is not allowed.
-
-In the provided code snippet, this error might occur when accessing `file_key` from the `files` dictionary. The variable `files` is being pulled from XCom as a string rather than a dictionary. XCom stores all data as strings, so additional parsing is required to convert the string representation back into a dictionary.
-
-### Correcting the Error
-
-1. **Properly parse the XCom data**: Ensure that the XCom pulled data is converted back into the appropriate data structure (e.g., a dictionary).
-
-2. **Use `ast.literal_eval` or `json.loads`**: Convert the string back into a dictionary if you expect a dictionary structure.
-
-Here's a corrected version of the relevant part of the code:
-
-```python
 import hashlib
-import ast  # Import ast to safely evaluate strings
+import json
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.providers.jdbc.hooks.jdbc import JdbcHook
+from airflow.providers.smtp.operators.email import EmailOperator
+
+# Constants
+BUCKET_NAME = 'your-bucket-name'
+INPUT_PREFIX = 'input'
+PROCESSED_PREFIX = 'processed'
+FILE_TYPES = ['filetype1', 'filetype2']  # Add your file types
+AWS_CONN_ID = 'aws_default'
+SPARK_CONN_ID = 'spark_default'
+DB2_CONN_ID = 'db2_default'
+RECIPIENT_EMAIL = 'example@example.com'
+
+# Utility function to generate a unique task ID
+def generate_task_id(base, identifier):
+    hashed_id = hashlib.md5(identifier.encode()).hexdigest()[:8]
+    return f"{base}_{hashed_id}"
 
 # Function to list files and return them as a list
 def list_s3_files(**context):
@@ -23,12 +32,28 @@ def list_s3_files(**context):
         file_keys = s3_hook.list_keys(bucket_name=BUCKET_NAME, prefix=prefix)
         if file_keys:
             files[file_type] = file_keys
-    context['ti'].xcom_push(key='files', value=files)
+    context['ti'].xcom_push(key='files', value=json.dumps(files))
+
+# Function to move processed files
+def move_processed_files(file_key, **context):
+    s3_hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    destination_key = file_key.replace(INPUT_PREFIX, PROCESSED_PREFIX)
+    s3_hook.copy_object(BUCKET_NAME, file_key, BUCKET_NAME, destination_key)
+    s3_hook.delete_objects(BUCKET_NAME, file_key)
+
+# Function to log the file processing into DB2
+def log_to_db2(file_key, file_type, status, **context):
+    db_hook = JdbcHook(jdbc_conn_id=DB2_CONN_ID)
+    insert_query = (
+        "INSERT INTO file_processing_log (file_key, file_type, status) "
+        "VALUES (%s, %s, %s)"
+    )
+    db_hook.run(insert_query, parameters=(file_key, file_type, status))
 
 # DAG definition
 with DAG('s3_spark_submit',
          start_date=datetime(2023, 1, 1),
-         schedule_interval=None,  # Trigger manually or as required
+         schedule_interval=None,
          catchup=False) as dag:
 
     # List all files from input directories
@@ -42,6 +67,7 @@ with DAG('s3_spark_submit',
         # Generate unique task IDs
         spark_task_id = generate_task_id(f'spark_submit_{file_type}', file_key)
         move_task_id = generate_task_id(f'move_processed_files_{file_type}', file_key)
+        log_task_id = generate_task_id(f'log_to_db2_{file_type}', file_key)
 
         # Spark Submit task
         spark_submit_task = SparkSubmitOperator(
@@ -63,30 +89,39 @@ with DAG('s3_spark_submit',
             provide_context=True
         )
 
+        # Log to DB2 task
+        log_db2_task = PythonOperator(
+            task_id=log_task_id,
+            python_callable=log_to_db2,
+            op_args=[file_key, file_type, 'processed'],
+            provide_context=True
+        )
+
         # Set task dependencies
-        list_files_task >> spark_submit_task >> move_files_task
+        list_files_task >> spark_submit_task >> move_files_task >> log_db2_task
 
     # Read files list from XCom and create tasks
-    files = "{{ task_instance.xcom_pull(task_ids='list_files', key='files') }}"
-    files_dict = ast.literal_eval(files)  # Convert string to dict
+    def create_dynamic_tasks(**context):
+        files = context['ti'].xcom_pull(task_ids='list_files', key='files')
+        if files:
+            files_dict = json.loads(files)  # Convert string to dict
+            for file_type, file_keys in files_dict.items():
+                for file_key in file_keys:
+                    create_spark_and_move_tasks(file_type, file_key)
 
-    for file_type, file_keys in files_dict.items():
-        for file_key in file_keys:
-            create_spark_and_move_tasks(file_type, file_key)
-```
+    create_tasks_task = PythonOperator(
+        task_id='create_dynamic_tasks',
+        python_callable=create_dynamic_tasks,
+        provide_context=True
+    )
 
-### Key Changes:
+    # Notification email task
+    send_email_task = EmailOperator(
+        task_id='send_email',
+        to=RECIPIENT_EMAIL,
+        subject='Airflow DAG Notification',
+        html_content='<p>Your DAG has completed successfully.</p>',
+    )
 
-1. **Parsing XCom Data**:
-   - Use `ast.literal_eval(files)` to safely evaluate the string representation of the dictionary pulled from XCom into a dictionary object `files_dict`. This allows you to access `file_type` and `file_keys` correctly.
-
-2. **Creating Tasks Dynamically**:
-   - The `create_spark_and_move_tasks` function is defined to encapsulate the logic of creating the `SparkSubmitOperator` and `move_files_task` for each file. This ensures tasks are dynamically created with unique `task_id`s.
-
-### Important Considerations:
-
-- **Security**: The use of `ast.literal_eval` is preferred over `eval` for safely evaluating expressions from untrusted sources. It only evaluates literals and hence reduces security risks.
-
-- **Error Handling**: Ensure to handle potential errors that may arise from improper parsing or missing files.
-
-- **Testing**: Verify the logic with a subset of data to ensure that the dynamic creation of tasks works as expected and that all edge cases (e.g., no files found, parsing errors) are properly managed.
+    # Set dependencies for dynamic task creation and email notification
+    list_files_task >> create_tasks_task >> send_email_task

@@ -1,0 +1,107 @@
+To achieve this, you can use Apache Airflow's S3 hooks to interact with the S3 bucket, combined with a SparkSubmitOperator to submit your Spark job. The DAG will consist of the following steps:
+
+1. **List Files in S3**: Use an S3 hook to list files in the `bucketname/input/filetype/files` directory.
+2. **Spark Submit**: For each file, use the SparkSubmitOperator to run a Spark job, passing the file path as an input parameter.
+3. **Move Processed Files**: After processing, move the files to the `bucketname/processed/filetype/files` directory.
+
+### Setup
+
+#### 1. **Airflow Environment Configuration**
+   - Ensure that the Airflow environment is properly configured with AWS credentials (via Airflow connections and variables).
+   - The `S3Hook` and `SparkSubmitOperator` require appropriate AWS and Spark cluster configurations.
+
+#### 2. **DAG Implementation**
+
+Here's a sample Airflow DAG implementation:
+
+```python
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+
+# Constants
+BUCKET_NAME = 'your-bucket-name'
+INPUT_PREFIX = 'input'
+PROCESSED_PREFIX = 'processed'
+FILE_TYPES = ['filetype1', 'filetype2']  # Add your file types
+AWS_CONN_ID = 'aws_default'
+SPARK_CONN_ID = 'spark_default'
+
+# Function to list files and return them as a list
+def list_s3_files(**context):
+    s3_hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    files = []
+    for file_type in FILE_TYPES:
+        prefix = f"{INPUT_PREFIX}/{file_type}/files/"
+        files.extend(s3_hook.list_keys(bucket_name=BUCKET_NAME, prefix=prefix))
+    context['ti'].xcom_push(key='files', value=files)
+
+# Function to move processed files
+def move_processed_files(file_key, **context):
+    s3_hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    for file_type in FILE_TYPES:
+        if f"/{file_type}/" in file_key:
+            destination_key = file_key.replace(INPUT_PREFIX, PROCESSED_PREFIX)
+            s3_hook.copy_object(BUCKET_NAME, file_key, BUCKET_NAME, destination_key)
+            s3_hook.delete_objects(BUCKET_NAME, file_key)
+
+# DAG definition
+with DAG('s3_spark_submit',
+         start_date=datetime(2023, 1, 1),
+         schedule_interval=None,  # Trigger manually or as required
+         catchup=False) as dag:
+
+    # List all files from input directories
+    list_files_task = PythonOperator(
+        task_id='list_files',
+        python_callable=list_s3_files,
+        provide_context=True
+    )
+
+    # Create a dynamic list of SparkSubmitOperators for each file
+    spark_submit_tasks = []
+    for file_type in FILE_TYPES:
+        spark_submit_task = SparkSubmitOperator(
+            task_id=f'spark_submit_{file_type}',
+            application='s3://path-to-your-jar/your-application.jar',
+            conn_id=SPARK_CONN_ID,
+            application_args=[
+                '--input-file', '{{ ti.xcom_pull(task_ids="list_files", key="files") }}'
+            ],
+            dag=dag
+        )
+        spark_submit_tasks.append(spark_submit_task)
+        list_files_task >> spark_submit_task
+
+        # Move processed files
+        move_files_task = PythonOperator(
+            task_id=f'move_processed_files_{file_type}',
+            python_callable=move_processed_files,
+            op_args=[file_type],
+            provide_context=True
+        )
+        spark_submit_task >> move_files_task
+```
+
+### Key Components
+
+1. **list_s3_files Function**:
+   - Uses `S3Hook` to list all files in the specified S3 input directories for each `filetype`.
+   - Pushes the list of files to XCom for downstream tasks.
+
+2. **SparkSubmitOperator**:
+   - Dynamically creates a SparkSubmitOperator task for each file type, passing the file path as an argument to the Spark job.
+
+3. **move_processed_files Function**:
+   - Uses `S3Hook` to move each processed file from the `input` to the `processed` directory.
+   - It copies the file to the new location and deletes the original.
+
+### Additional Considerations
+
+- **Error Handling**: Implement error handling for cases where the files are not processed correctly or if the S3 operations fail.
+- **Security**: Ensure that the AWS credentials and connections are securely managed within Airflow.
+- **Scalability**: For a large number of files, consider using batching or parallel processing to improve efficiency.
+
+This DAG allows for a streamlined process where files from an S3 bucket are processed by a Spark job and then moved to a processed folder, with each step managed and tracked by Airflow.

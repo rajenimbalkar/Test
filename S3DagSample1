@@ -1,8 +1,16 @@
-Given your requirements, let's modify the DAG to pass two arguments to the Spark job: `--filepath` for the S3 file path and `--filetype` for the type of file (e.g., `filetype1`). We'll also adjust the `SparkSubmitOperator` to include these arguments.
+The error `DuplicateTaskId found for sparksubmit task id` occurs because each task in an Airflow DAG must have a unique `task_id`. In the provided DAG, the `task_id` for `SparkSubmitOperator` tasks and the `move_processed_files` tasks are generated dynamically, but there might still be collisions or issues with uniqueness, especially if `file_key` contains special characters or if two file keys generate the same `task_id` string.
 
-Here's the updated Airflow DAG:
+To ensure unique and valid task IDs, we can:
+
+1. **Sanitize the `file_key` to remove any characters not allowed in task IDs.**
+2. **Use a hash or unique identifier if the file path contains characters that cannot be sanitized to a unique string.**
+
+Here’s the revised approach:
+
+### Revised DAG with Unique Task IDs
 
 ```python
+import hashlib
 from datetime import datetime
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
@@ -37,6 +45,18 @@ def move_processed_files(file_key, **context):
             s3_hook.copy_object(BUCKET_NAME, file_key, BUCKET_NAME, destination_key)
             s3_hook.delete_objects(BUCKET_NAME, file_key)
 
+# Utility function to generate a unique task ID
+def generate_task_id(base, identifier):
+    """
+    Generate a task_id by combining a base name with a hashed identifier.
+
+    :param base: Base name for the task
+    :param identifier: Unique identifier (such as a file key)
+    :return: Unique task_id string
+    """
+    hashed_id = hashlib.md5(identifier.encode()).hexdigest()[:8]
+    return f"{base}_{hashed_id}"
+
 # DAG definition
 with DAG('s3_spark_submit',
          start_date=datetime(2023, 1, 1),
@@ -50,57 +70,53 @@ with DAG('s3_spark_submit',
         provide_context=True
     )
 
-    # Create a dynamic list of SparkSubmitOperators for each file type and file
+    # Dynamically create tasks for each file
+    files = "{{ ti.xcom_pull(task_ids='list_files', key='files') }}"
     for file_type in FILE_TYPES:
-        spark_submit_tasks = []
-        move_tasks = []
+        if files:
+            for file_key in files[file_type]:
+                # Generate unique task IDs
+                spark_task_id = generate_task_id(f'spark_submit_{file_type}', file_key)
+                move_task_id = generate_task_id(f'move_processed_files_{file_type}', file_key)
 
-        for file_key in '{{ ti.xcom_pull(task_ids="list_files", key="files")[file_type] }}':
-            # Spark Submit task
-            spark_submit_task = SparkSubmitOperator(
-                task_id=f'spark_submit_{file_type}_{file_key.replace("/", "_")}',
-                application='s3://path-to-your-jar/your-application.jar',
-                conn_id=SPARK_CONN_ID,
-                application_args=[
-                    '--filepath', f's3://{BUCKET_NAME}/{file_key}',
-                    '--filetype', file_type
-                ],
-                dag=dag
-            )
-            spark_submit_tasks.append(spark_submit_task)
-            list_files_task >> spark_submit_task
+                # Spark Submit task
+                spark_submit_task = SparkSubmitOperator(
+                    task_id=spark_task_id,
+                    application='s3://path-to-your-jar/your-application.jar',
+                    conn_id=SPARK_CONN_ID,
+                    application_args=[
+                        '--filepath', f's3://{BUCKET_NAME}/{file_key}',
+                        '--filetype', file_type
+                    ],
+                    dag=dag
+                )
 
-            # Move files task
-            move_files_task = PythonOperator(
-                task_id=f'move_processed_files_{file_type}_{file_key.replace("/", "_")}',
-                python_callable=move_processed_files,
-                op_args=[file_key],
-                provide_context=True
-            )
-            move_tasks.append(move_files_task)
-            spark_submit_task >> move_files_task
+                # Move processed files task
+                move_files_task = PythonOperator(
+                    task_id=move_task_id,
+                    python_callable=move_processed_files,
+                    op_args=[file_key],
+                    provide_context=True
+                )
+
+                # Set task dependencies
+                list_files_task >> spark_submit_task >> move_files_task
 ```
 
-### Explanation of Changes
+### Key Changes and Explanations
 
-1. **Modified the XCom Key**:
-   - The `list_s3_files` function now pushes a dictionary where the keys are `filetype` and the values are lists of file keys. This helps in organizing files by their type and simplifies access in downstream tasks.
+1. **Sanitize and Generate Unique Task IDs**:
+   - The `generate_task_id` function takes a `base` string (e.g., 'spark_submit_filetype1') and an `identifier` (e.g., `file_key`) to generate a unique task ID. It hashes the `identifier` using MD5 to ensure uniqueness and validity.
+   - This method avoids issues with special characters and ensures that even if `file_key` strings are very long or complex, the resulting task ID is short and unique.
 
 2. **Dynamic Task Creation**:
-   - For each `file_type`, the DAG dynamically creates a `SparkSubmitOperator` and a subsequent `PythonOperator` to move processed files.
-   - The `SparkSubmitOperator` uses `application_args` to pass the `--filepath` and `--filetype` arguments to the Spark job.
+   - The DAG dynamically creates tasks based on the files found in the S3 bucket, ensuring each task is unique and associated with the correct file.
 
-3. **Filepath and Filetype Arguments**:
-   - The `SparkSubmitOperator` now includes `--filepath` as the S3 path of the file and `--filetype` to specify the type of the file.
+3. **Task Dependency Management**:
+   - Each `spark_submit_task` is followed by a `move_files_task` to ensure files are only moved after successful processing.
 
-### Key Considerations
+### Considerations
+- **Performance**: If the number of files is very large, consider optimizing the DAG to handle large numbers of tasks, possibly through batching or parallel task execution.
+- **Error Handling**: Additional error handling can be incorporated to manage issues such as network errors, permissions issues, or unexpected failures in Spark jobs.
 
-- **Dynamic Task IDs**: Task IDs are unique per DAG run. For each `SparkSubmitOperator` and `move_processed_files` task, the file key is sanitized (replacing `/` with `_`) to ensure the task IDs are valid and unique.
-
-- **Safety and Permissions**: Ensure that the S3 buckets and the Airflow instance have the necessary permissions set up to access and manipulate the files in S3.
-
-- **Scalability**: If the number of files is very large, consider batching files together or using parallel execution methods to optimize the workflow.
-
-- **Error Handling**: Add error handling and notifications as needed, especially to handle cases where files might not be moved successfully or where the Spark job fails.
-
-This DAG setup will read files from the specified S3 bucket paths, process them using Spark, and then move them to a "processed" folder, all while being orchestrated by Airflow.
+This setup will ensure that each file from the S3 bucket is processed uniquely, and the processed files are moved to the appropriate location, while also preventing any task ID collisions.

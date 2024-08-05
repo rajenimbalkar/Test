@@ -1,0 +1,39 @@
+public class SqlQueryBuilder {
+
+    /**
+     * Constructs a SQL SELECT statement.
+     *
+     * @param tableName the name of the table
+     * @param columns   an array of column names to be selected
+     * @param whereClause an optional WHERE clause, or null if no WHERE clause
+     * @return the constructed SQL SELECT statement
+     */
+    public static String buildSelectQuery(String tableName, String[] columns, String whereClause) {
+        // Validate inputs
+        if (tableName == null || tableName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Table name cannot be null or empty");
+        }
+        if (columns == null || columns.length == 0) {
+            throw new IllegalArgumentException("Columns array cannot be null or empty");
+        }
+
+        // Construct the SELECT clause
+        String columnsPart = String.join(", ", columns);
+
+        // Construct the WHERE clause
+        String wherePart = (whereClause != null && !whereClause.trim().isEmpty()) ? " WHERE " + whereClause : "";
+
+        // Construct the full SQL query
+        return String.format("SELECT %s FROM %s%s", columnsPart, tableName, wherePart);
+    }
+
+    public static void main(String[] args) {
+        // Example usage
+        String tableName = "employees";
+        String[] columns = {"id", "name", "position"};
+        String whereClause = "age > 30";
+
+        String query = buildSelectQuery(tableName, columns, whereClause);
+        System.out.println(query); // Output: SELECT id, name, position FROM employees WHERE age > 30
+    }
+}

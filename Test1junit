@@ -1,0 +1,52 @@
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.*;
+
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+
+public class MyStaticClassTest {
+
+    @Test
+    public void testReadFromFilePath() throws IOException {
+        // File path to be passed
+        String filePath = "mocked/file/path";
+
+        // Mock FileInputStream
+        FileInputStream mockFileInputStream = mock(FileInputStream.class);
+
+        // Mock BufferedReader and its behavior
+        BufferedReader mockBufferedReader = mock(BufferedReader.class);
+        when(mockBufferedReader.readLine()).thenReturn("Mocked line");
+
+        // Mock FileInputStream constructor
+        MockedStatic<FileInputStream> mockFileInputStreamStatic = mockStatic(FileInputStream.class);
+        mockFileInputStreamStatic.when(() -> new FileInputStream(filePath)).thenReturn(mockFileInputStream);
+        
+        // Mock InputStreamReader construction
+        MockedStatic<InputStreamReader> mockInputStreamReaderStatic = mockStatic(InputStreamReader.class);
+        mockInputStreamReaderStatic.when(() -> new InputStreamReader(mockFileInputStream))
+                                   .thenReturn(mock(InputStreamReader.class));
+
+        // Mock BufferedReader construction
+        MockedStatic<BufferedReader> mockBufferedReaderStatic = mockStatic(BufferedReader.class);
+        mockBufferedReaderStatic.when(() -> new BufferedReader(any(InputStreamReader.class)))
+                                .thenReturn(mockBufferedReader);
+
+        // Test the static method
+        String result = MyStaticClass.readFromFilePath(filePath);
+
+        // Verify the result
+        assertEquals("Mocked line", result);
+
+        // Close the mocks
+        mockFileInputStreamStatic.close();
+        mockInputStreamReaderStatic.close();
+        mockBufferedReaderStatic.close();
+    }
+}

@@ -1,0 +1,58 @@
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.types.StructField;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class SchemaRow {
+    private StructType schema;
+    private Row row;
+
+    public SchemaRow(StructType schema, Map<String, Object> fieldValues) {
+        this.schema = schema;
+        this.row = createRowWithSchema(schema, fieldValues);
+    }
+
+    private Row createRowWithSchema(StructType schema, Map<String, Object> fieldValues) {
+        Object[] rowValues = new Object[schema.fields().length];
+
+        for (int i = 0; i < schema.fields().length; i++) {
+            StructField field = schema.fields()[i];
+            String fieldName = field.name();
+            Object value = fieldValues.get(fieldName);
+
+            // Perform type checking if necessary
+            if (value != null && !field.dataType().acceptsType(field.dataType())) {
+                throw new IllegalArgumentException("Invalid type for field: " + fieldName);
+            }
+
+            rowValues[i] = value;
+        }
+
+        return RowFactory.create(rowValues);
+    }
+
+    public Object getField(String fieldName) {
+        int index = schema.fieldIndex(fieldName);
+        return row.get(index);
+    }
+
+    public StructType getSchema() {
+        return schema;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("SchemaRow{\n");
+        for (int i = 0; i < schema.fields().length; i++) {
+            sb.append(schema.fields()[i].name())
+              .append(": ")
+              .append(row.get(i))
+              .append("\n");
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+}

@@ -1,0 +1,96 @@
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.Function2;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.util.LongAccumulator;
+
+import java.io.Serializable;
+import java.util.List;
+
+public class FlatFileValidator implements Serializable {
+
+    // Custom class to represent each row with its type and account number
+    static class RowData implements Serializable {
+        String rowType; // "header", "transaction", "trailer"
+        String accountNumber;
+        String originalLine;
+
+        RowData(String rowType, String accountNumber, String originalLine) {
+            this.rowType = rowType;
+            this.accountNumber = accountNumber;
+            this.originalLine = originalLine;
+        }
+    }
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("Flat File Validator")
+                .master("yarn")  // Adjust based on your cluster manager
+                .getOrCreate();
+        JavaSparkContext sc = new JavaSparkContext(spark.sparkContext());
+
+        // Load the flat file
+        JavaRDD<String> lines = sc.textFile("hdfs:///path/to/flatfile.txt");
+
+        // Parse each line into RowData
+        JavaRDD<RowData> rows = lines.map(line -> {
+            String accountNumber = line.substring(10, 20).trim(); // Adjust based on actual position
+            String rowType;
+            if (line.startsWith("HDR")) {
+                rowType = "header";
+            } else if (line.startsWith("TRL")) {
+                rowType = "trailer";
+            } else {
+                rowType = "transaction";
+            }
+            return new RowData(rowType, accountNumber, line);
+        });
+
+        // Group by account number
+        JavaRDD<List<RowData>> groupedRows = rows.groupBy(row -> row.accountNumber).values().map(iterable -> {
+            return (List<RowData>) iterable;
+        });
+
+        // Accumulators to keep track of valid and invalid sets
+        LongAccumulator validSetsAccumulator = sc.sc().longAccumulator("ValidSets");
+        LongAccumulator invalidSetsAccumulator = sc.sc().longAccumulator("InvalidSets");
+
+        // Validate each group
+        groupedRows.foreach(set -> {
+            boolean hasHeader = false;
+            boolean hasTrailer = false;
+            boolean isValid = true;
+
+            for (RowData row : set) {
+                if ("header".equals(row.rowType)) {
+                    if (hasHeader) {
+                        isValid = false; // Multiple headers found
+                        break;
+                    }
+                    hasHeader = true;
+                } else if ("trailer".equals(row.rowType)) {
+                    if (hasTrailer) {
+                        isValid = false; // Multiple trailers found
+                        break;
+                    }
+                    hasTrailer = true;
+                }
+            }
+
+            // There should be exactly one header and one trailer
+            if (isValid && hasHeader && hasTrailer) {
+                validSetsAccumulator.add(1);
+            } else {
+                invalidSetsAccumulator.add(1);
+            }
+        });
+
+        // Print the results
+        System.out.println("Valid sets: " + validSetsAccumulator.value());
+        System.out.println("Invalid sets: " + invalidSetsAccumulator.value());
+
+        // Stop the Spark session
+        spark.stop();
+    }
+}

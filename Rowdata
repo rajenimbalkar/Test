@@ -1,0 +1,47 @@
+import java.io.Serializable;
+
+public class RowData implements Serializable {
+    String rowType;      // "header", "transaction", or "trailer"
+    String accountNumber;
+    String originalLine; // The entire line of data as a string
+
+    public RowData(String rowType, String accountNumber, String originalLine) {
+        this.rowType = rowType;
+        this.accountNumber = accountNumber;
+        this.originalLine = originalLine;
+    }
+
+    // Getters and Setters for accessing and modifying the attributes
+    public String getRowType() {
+        return rowType;
+    }
+
+    public void setRowType(String rowType) {
+        this.rowType = rowType;
+    }
+
+    public String getAccountNumber() {
+        return accountNumber;
+    }
+
+    public void setAccountNumber(String accountNumber) {
+        this.accountNumber = accountNumber;
+    }
+
+    public String getOriginalLine() {
+        return originalLine;
+    }
+
+    public void setOriginalLine(String originalLine) {
+        this.originalLine = originalLine;
+    }
+
+    @Override
+    public String toString() {
+        return "RowData{" +
+                "rowType='" + rowType + '\'' +
+                ", accountNumber='" + accountNumber + '\'' +
+                ", originalLine='" + originalLine + '\'' +
+                '}';
+    }
+}

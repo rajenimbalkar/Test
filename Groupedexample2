@@ -1,0 +1,60 @@
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.MapGroupsFunction;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Encoders;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.expressions.UserDefinedFunction;
+import org.apache.spark.sql.functions;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
+public class GroupByAccount {
+    public static void main(String[] args) {
+        // Create Spark session
+        SparkSession spark = SparkSession.builder()
+                .appName("GroupByAccount")
+                .master("local[*]")  // Use "yarn" or other cluster managers for distributed mode
+                .getOrCreate();
+
+        // Load the file as a DataFrame
+        Dataset<Row> df = spark.read()
+                .format("csv")
+                .option("header", "true")
+                .load("path/to/flatfile.csv");
+
+        // Convert each Row to a RowData object
+        Dataset<RowData> rowDataDataset = df.map(
+            (Row row) -> new RowData(
+                row.getAs("accountNumber"),  // Adjust this column name
+                row.getAs("field1"),         // Replace with actual fields
+                row.getAs("field2")
+            ),
+            Encoders.bean(RowData.class)
+        );
+
+        // Group by account number and collect to list
+        Dataset<List<RowData>> groupedDataset = rowDataDataset.groupByKey(
+            (RowData rowData) -> rowData.getAccountNumber(),
+            Encoders.STRING()
+        ).mapGroups(
+            (MapGroupsFunction<String, RowData, List<RowData>>) (accountNumber, rowDataIterator) -> {
+                List<RowData> rowDataList = new ArrayList<>();
+                rowDataIterator.forEachRemaining(rowDataList::add);
+                return rowDataList;
+            },
+            Encoders.javaSerialization(List.class)
+        );
+
+        // Show the resulting Dataset<List<RowData>>
+        groupedDataset.show(false);
+
+        // Optionally, save the Dataset<List<RowData>> to a file
+        groupedDataset.write().text("path/to/output.txt");
+
+        // Stop the Spark session
+        spark.stop();
+    }
+}

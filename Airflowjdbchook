@@ -2,49 +2,93 @@ from airflow import DAG
 from airflow.providers.jdbc.hooks.jdbc import JdbcHook
 from airflow.operators.python_operator import PythonOperator
 from datetime import datetime
+import uuid
 
-# Define a function that performs the SELECT and INSERT operations
-def select_and_insert():
-    # Set up the JdbcHook with your connection ID
+def generate_unique_key():
+    """Generate a 10-digit unique integer key."""
+    # Generate a UUID and convert it to a string
+    unique_key = str(uuid.uuid4().int)[:10]  # Extract first 10 digits
+    return unique_key
+
+def insert_record(**kwargs):
+    """Insert a record into DB2 with a unique key and capture the key."""
     jdbc_hook = JdbcHook(jdbc_conn_id='my_jdbc_conn')
 
-    # Establish a connection
-    connection = jdbc_hook.get_conn()
-    cursor = connection.cursor()
+    # Generate a 10-digit unique key
+    unique_key = generate_unique_key()
     
-    # Perform the SELECT operation
-    select_query = "SELECT value_column FROM source_table WHERE condition_column = 'condition_value'"
-    cursor.execute(select_query)
-    result = cursor.fetchone()
+    # Insert query with unique key
+    insert_query = """
+        INSERT INTO job_status_table (job_id, status, message, create_time)
+        VALUES (?, 'PENDING', 'Job started', CURRENT_TIMESTAMP)
+    """
+    # Execute the insert query
+    jdbc_hook.run(insert_query, parameters=(unique_key,))
     
-    if result:
-        value_to_insert = result[0]  # Assuming the value to use is in the first column
-        print(f"Value to insert: {value_to_insert}")
-        
-        # Perform the INSERT operation using the value from the SELECT
-        insert_query = "INSERT INTO target_table (column_name) VALUES (?)"
-        cursor.execute(insert_query, (value_to_insert,))
-        connection.commit()  # Commit the transaction
-        print("Insert operation completed.")
+    # Push the unique_key to XCom for use in later tasks
+    kwargs['task_instance'].xcom_push(key='job_id', value=unique_key)
+    print(f"Inserted record with job_id: {unique_key}")
+
+def update_record_status(**kwargs):
+    """Update the DB2 table based on the Spark job results using the unique key."""
+    jdbc_hook = JdbcHook(jdbc_conn_id='my_jdbc_conn')
+    
+    # Get the job_id from XCom
+    job_id = kwargs['task_instance'].xcom_pull(key='job_id', task_ids='insert_task')
+    
+    # Dummy logic to determine success/failure
+    # Replace with actual logic to check Spark job result
+    spark_return_code = kwargs['task_instance'].xcom_pull(task_ids='spark_submit_task')
+    if spark_return_code == 0:
+        status = 'SUCCESS'
+        message = 'Spark job completed successfully.'
     else:
-        print("No result found from SELECT operation.")
+        status = 'ERROR'
+        message = 'Spark job failed.'
     
-    # Clean up
-    cursor.close()
-    connection.close()
+    # Update query with the status and message
+    update_query = """
+        UPDATE job_status_table
+        SET status = ?, message = ?, update_time = CURRENT_TIMESTAMP
+        WHERE job_id = ?
+    """
+    jdbc_hook.run(update_query, parameters=(status, message, job_id))
+    print(f"Updated record with job_id: {job_id} to status: {status}")
 
 # Define default arguments for the DAG
 default_args = {
     'owner': 'airflow',
-    'start_date': datetime(2023, 8, 1),
+    'start_date': datetime(2024, 8, 1),
+    'retries': 1
 }
 
 # Define the DAG
-dag = DAG('jdbc_select_insert_example', default_args=default_args, schedule_interval='@daily')
+dag = DAG('db2_insert_update_status', default_args=default_args, schedule_interval='@daily')
 
-# Define the PythonOperator to run the select_and_insert function
-task = PythonOperator(
-    task_id='select_and_insert_task',
-    python_callable=select_and_insert,
+# Task to insert a record into the DB2 table with a unique key
+insert_task = PythonOperator(
+    task_id='insert_task',
+    python_callable=insert_record,
+    provide_context=True,
     dag=dag
 )
+
+# Task to update the record status based on the Spark job result
+update_task = PythonOperator(
+    task_id='update_task',
+    python_callable=update_record_status,
+    provide_context=True,
+    dag=dag
+)
+
+# Define the SparkSubmitOperator to submit a Spark job
+# Ensure that you have a Spark connection configured in Airflow
+spark_submit_task = SparkSubmitOperator(
+    task_id='spark_submit_task',
+    application='/path/to/your/spark_application.py',
+    conn_id='spark_conn',
+    dag=dag
+)
+
+# Set task dependencies
+insert_task >> spark_submit_task >> update_task

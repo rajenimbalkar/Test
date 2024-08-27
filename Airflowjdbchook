@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.providers.jdbc.hooks.jdbc import JdbcHook
 from airflow.operators.python_operator import PythonOperator
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from datetime import datetime
 import uuid
 
@@ -10,7 +11,7 @@ def generate_unique_key():
     unique_key = str(uuid.uuid4().int)[:10]  # Extract first 10 digits
     return unique_key
 
-def insert_record(**kwargs):
+def insert_record():
     """Insert a record into DB2 with a unique key and capture the key."""
     jdbc_hook = JdbcHook(jdbc_conn_id='my_jdbc_conn')
 
@@ -26,19 +27,18 @@ def insert_record(**kwargs):
     jdbc_hook.run(insert_query, parameters=(unique_key,))
     
     # Push the unique_key to XCom for use in later tasks
-    kwargs['task_instance'].xcom_push(key='job_id', value=unique_key)
-    print(f"Inserted record with job_id: {unique_key}")
+    return unique_key
 
-def update_record_status(**kwargs):
+def update_record_status(**context):
     """Update the DB2 table based on the Spark job results using the unique key."""
     jdbc_hook = JdbcHook(jdbc_conn_id='my_jdbc_conn')
     
     # Get the job_id from XCom
-    job_id = kwargs['task_instance'].xcom_pull(key='job_id', task_ids='insert_task')
+    job_id = context['ti'].xcom_pull(task_ids='insert_task')
     
     # Dummy logic to determine success/failure
     # Replace with actual logic to check Spark job result
-    spark_return_code = kwargs['task_instance'].xcom_pull(task_ids='spark_submit_task')
+    spark_return_code = context['ti'].xcom_pull(task_ids='spark_submit_task')
     if spark_return_code == 0:
         status = 'SUCCESS'
         message = 'Spark job completed successfully.'
@@ -69,7 +69,14 @@ dag = DAG('db2_insert_update_status', default_args=default_args, schedule_interv
 insert_task = PythonOperator(
     task_id='insert_task',
     python_callable=insert_record,
-    provide_context=True,
+    dag=dag
+)
+
+# Task to submit a Spark job
+spark_submit_task = SparkSubmitOperator(
+    task_id='spark_submit_task',
+    application='/path/to/your/spark_application.py',
+    conn_id='spark_conn',
     dag=dag
 )
 
@@ -81,14 +88,5 @@ update_task = PythonOperator(
     dag=dag
 )
 
-# Define the SparkSubmitOperator to submit a Spark job
-# Ensure that you have a Spark connection configured in Airflow
-spark_submit_task = SparkSubmitOperator(
-    task_id='spark_submit_task',
-    application='/path/to/your/spark_application.py',
-    conn_id='spark_conn',
-    dag=dag
-)
-
-# Set task dependencies
+# Define task dependencies
 insert_task >> spark_submit_task >> update_task

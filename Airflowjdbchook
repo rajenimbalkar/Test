@@ -1,0 +1,50 @@
+from airflow import DAG
+from airflow.providers.jdbc.hooks.jdbc import JdbcHook
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime
+
+# Define a function that performs the SELECT and INSERT operations
+def select_and_insert():
+    # Set up the JdbcHook with your connection ID
+    jdbc_hook = JdbcHook(jdbc_conn_id='my_jdbc_conn')
+
+    # Establish a connection
+    connection = jdbc_hook.get_conn()
+    cursor = connection.cursor()
+    
+    # Perform the SELECT operation
+    select_query = "SELECT value_column FROM source_table WHERE condition_column = 'condition_value'"
+    cursor.execute(select_query)
+    result = cursor.fetchone()
+    
+    if result:
+        value_to_insert = result[0]  # Assuming the value to use is in the first column
+        print(f"Value to insert: {value_to_insert}")
+        
+        # Perform the INSERT operation using the value from the SELECT
+        insert_query = "INSERT INTO target_table (column_name) VALUES (?)"
+        cursor.execute(insert_query, (value_to_insert,))
+        connection.commit()  # Commit the transaction
+        print("Insert operation completed.")
+    else:
+        print("No result found from SELECT operation.")
+    
+    # Clean up
+    cursor.close()
+    connection.close()
+
+# Define default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'start_date': datetime(2023, 8, 1),
+}
+
+# Define the DAG
+dag = DAG('jdbc_select_insert_example', default_args=default_args, schedule_interval='@daily')
+
+# Define the PythonOperator to run the select_and_insert function
+task = PythonOperator(
+    task_id='select_and_insert_task',
+    python_callable=select_and_insert,
+    dag=dag
+)

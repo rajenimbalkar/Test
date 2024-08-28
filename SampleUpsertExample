@@ -1,0 +1,233 @@
+To provide a complete example that includes handling a BLOB (Binary Large Object) condition in a Spring Boot application using Apache Spark, JPA, and DB2, I'll cover the following components:
+
+1. **JPA Entity**: Define the entity class with a BLOB field.
+2. **Spring Boot Application**: Setup the main application class.
+3. **Spark Runner**: Use Spark to load data into `Dataset<Row>`, process partitions, and handle BLOB data.
+4. **Repository Interface**: Define the JPA repository for CRUD operations.
+
+### 1. JPA Entity with BLOB Field
+
+The entity class will include a BLOB field represented by a `byte[]` array. The UUID strategy is used for the primary key.
+
+```java
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.Id;
+import javax.persistence.Lob;
+import javax.persistence.PrePersist;
+import javax.persistence.Table;
+import java.util.UUID;
+
+@Entity
+@Table(name = "my_table")
+public class MyEntity {
+
+    @Id
+    @Column(name = "id", updatable = false, nullable = false)
+    private String id;
+
+    @Column(name = "name")
+    private String name;
+
+    @Column(name = "value")
+    private String value;
+
+    @Lob
+    @Column(name = "data", columnDefinition = "BLOB")
+    private byte[] data;  // BLOB field to store large binary data
+
+    // Constructors, getters, and setters
+
+    public MyEntity() {
+        // Default constructor
+    }
+
+    public MyEntity(String id, String name, String value, byte[] data) {
+        this.id = id;
+        this.name = name;
+        this.value = value;
+        this.data = data;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getValue() {
+        return value;
+    }
+
+    public void setValue(String value) {
+        this.value = value;
+    }
+
+    public byte[] getData() {
+        return data;
+    }
+
+    public void setData(byte[] data) {
+        this.data = data;
+    }
+
+    // Pre-persist method to set the UUID before saving
+    @PrePersist
+    protected void onCreate() {
+        if (this.id == null) {
+            this.id = UUID.randomUUID().toString();
+        }
+    }
+}
+```
+
+### 2. Spring Boot Application Setup
+
+The main application class sets up the Spring Boot application and initializes the Spark session.
+
+```java
+import org.apache.spark.sql.SparkSession;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class SparkJpaUpsertApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SparkJpaUpsertApplication.class, args);
+    }
+
+    public static SparkSession createSparkSession() {
+        return SparkSession.builder()
+                .appName("Spark JPA Upsert Example")
+                .master("local[*]")  // Change this as necessary for your production setup
+                .getOrCreate();
+    }
+}
+```
+
+### 3. Spark Runner with Dataset and Partition Processing
+
+This class loads data into a `Dataset<Row>`, processes each partition, dynamically maps rows to the `MyEntity` class, and handles BLOB data.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.ApplicationContext;
+import org.springframework.stereotype.Component;
+
+import java.lang.reflect.Field;
+
+@Component
+public class SparkRunner implements CommandLineRunner {
+
+    @Autowired
+    private MyEntityRepository myEntityRepository;
+
+    @Autowired
+    private ApplicationContext context;
+
+    @Override
+    public void run(String... args) {
+        SparkSession spark = SparkJpaUpsertApplication.createSparkSession();
+
+        // Load data into Dataset<Row>
+        Dataset<Row> dataset = loadDataset(spark);
+
+        // Process dataset partition by partition
+        dataset.foreachPartition(rows -> {
+            MyEntityRepository repository = context.getBean(MyEntityRepository.class);
+            rows.forEachRemaining(row -> {
+                MyEntity entity = mapRowToEntity(row);
+                repository.save(entity); // Upsert operation
+            });
+        });
+
+        spark.stop();
+    }
+
+    // Example method to load a Dataset<Row> from a CSV file
+    private Dataset<Row> loadDataset(SparkSession spark) {
+        return spark.read()
+                .format("csv")
+                .option("header", "true")
+                .option("inferSchema", "true")
+                .load("path/to/your/csvfile.csv"); // Replace with your actual data source
+    }
+
+    // Map a Row to a MyEntity object dynamically, handling BLOBs
+    private MyEntity mapRowToEntity(Row row) {
+        MyEntity entity = new MyEntity();
+
+        row.schema().fields().forEach(field -> {
+            try {
+                String fieldName = field.name();
+                Object value = row.getAs(fieldName);
+
+                // Use reflection to set the field value dynamically
+                Field entityField = MyEntity.class.getDeclaredField(fieldName);
+                entityField.setAccessible(true);
+
+                // Handle BLOB data
+                if (fieldName.equals("data") && value instanceof String) {
+                    entityField.set(entity, ((String) value).getBytes());
+                } else {
+                    entityField.set(entity, value);
+                }
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                e.printStackTrace();
+                // Log exception or handle error
+            }
+        });
+
+        return entity;
+    }
+}
+```
+
+### 4. JPA Repository Interface
+
+The repository interface provides the standard CRUD operations. Spring Data JPA automatically implements common operations based on method names.
+
+```java
+import org.springframework.data.repository.CrudRepository;
+
+public interface MyEntityRepository extends CrudRepository<MyEntity, String> {
+    // Custom query methods can be defined here
+}
+```
+
+### Explanation:
+
+1. **Entity Class with BLOB**: `MyEntity` is defined with a BLOB field, annotated with `@Lob` and `@Column(columnDefinition = "BLOB")`. This tells JPA and DB2 to treat this column as a BLOB.
+
+2. **Spring Boot Application**: The main class starts the Spring Boot application and creates a Spark session for interacting with Spark SQL.
+
+3. **Spark Runner**:
+   - **Loading Dataset**: The `loadDataset` method loads data from a CSV file into a `Dataset<Row>`. The format and source can be adjusted as needed.
+   - **Partition Processing**: Using `foreachPartition`, each partition of the dataset is processed in parallel. This improves scalability and performance when handling large datasets.
+   - **Dynamic Mapping with Reflection**: The `mapRowToEntity` method uses reflection to dynamically map fields from the `Row` to the entity class. It specifically checks for the "data" field to handle it as a BLOB by converting a string to a `byte[]`.
+
+4. **JPA Repository**: The repository interface provides the `save` method for upsert operations, ensuring that entities are inserted or updated as needed.
+
+### Notes:
+
+- **Blob Handling**: The BLOB handling in the `mapRowToEntity` method assumes the data is provided as a string and then converted to `byte[]`. Adjust this as needed based on how your BLOB data is represented in the source dataset.
+- **Error Handling**: The example includes basic error handling using try-catch blocks. Consider using a logging framework like SLF4J or Logback for better logging practices.
+- **Transactional Safety**: Ensure that upsert operations are wrapped in transactions if required. Use Spring’s `@Transactional` annotation for methods that modify the database.
+
+This complete example covers the use of Apache Spark for data processing, Spring Boot for application management, JPA for database interaction, and handling BLOB data using Java and reflection. Adjustments may be necessary based on specific project requirements and data sources.

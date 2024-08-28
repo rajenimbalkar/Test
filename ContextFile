@@ -1,0 +1,170 @@
+The `NotSerializableException` is a common issue when working with Spark, particularly when trying to use non-serializable objects like `ApplicationContext` or Spring-managed beans inside distributed operations such as `foreachPartition`. Spark requires that all objects sent to worker nodes must be serializable because it sends those objects over the network to different executors.
+
+### Why This Error Occurs:
+- **Spark's Distributed Nature**: Spark needs to serialize and send any closures, objects, or references used in RDD or DataFrame operations to worker nodes.
+- **Spring's `ApplicationContext`**: This context is not serializable because it contains many complex objects, including threads, sockets, and other system resources.
+
+### Solution:
+Instead of directly using the Spring `ApplicationContext` within the Spark closures, you can use dependency injection to create a serializable class that handles the database operations. This class can then be used within your Spark job.
+
+### Approach:
+1. **Create a Spring Service**: This service will handle database operations.
+2. **Use a Broadcast Variable**: Broadcast a reference to the Spring service or repository, allowing Spark executors to access it without serialization issues.
+
+### Step-by-Step Implementation
+
+#### 1. Create a Spring Service for Database Operations
+
+First, create a Spring service that handles the database operations. This service will be instantiated by the Spring context but won't be directly passed to the Spark workers.
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class MyEntityService {
+
+    @Autowired
+    private MyEntityRepository myEntityRepository;
+
+    @Transactional
+    public void saveEntity(MyEntity entity) {
+        myEntityRepository.save(entity); // This performs the upsert operation
+    }
+}
+```
+
+#### 2. Use a Singleton Class to Access the Spring Context
+
+Create a singleton class to access the Spring beans. This class will hold a reference to the Spring context.
+
+```java
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+
+public class SpringContextSingleton {
+    private static ApplicationContext context;
+
+    public static void initializeContext(ApplicationContext ctx) {
+        if (context == null) {
+            context = ctx;
+        }
+    }
+
+    public static ApplicationContext getContext() {
+        if (context == null) {
+            throw new IllegalStateException("Spring context is not initialized.");
+        }
+        return context;
+    }
+}
+```
+
+#### 3. Modify the Spark Runner Class
+
+Use the `SpringContextSingleton` to get the Spring beans within each partition. This approach avoids direct serialization of the Spring context.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.ApplicationContext;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
+
+@Component
+public class SparkRunner implements CommandLineRunner {
+
+    @Autowired
+    private ApplicationContext context;
+
+    @Override
+    public void run(String... args) {
+        // Initialize the Spring context in the singleton
+        SpringContextSingleton.initializeContext(context);
+
+        SparkSession spark = SparkJpaUpsertApplication.createSparkSession();
+
+        // Load data into Dataset<Row>
+        Dataset<Row> dataset = loadDataset(spark);
+
+        // Process dataset partition by partition using foreachPartition
+        dataset.foreachPartition(partition -> {
+            // Get the service from the Spring context inside the partition
+            MyEntityService entityService = SpringContextSingleton.getContext().getBean(MyEntityService.class);
+
+            // Convert iterator to a list for easier handling
+            List<Row> rows = StreamSupport.stream(partition.spliterator(), false)
+                                          .collect(Collectors.toList());
+
+            // Upsert operation for each row
+            rows.forEach(row -> {
+                MyEntity entity = mapRowToEntity(row);
+                entityService.saveEntity(entity);
+            });
+        });
+
+        spark.stop();
+    }
+
+    // Load dataset (e.g., from a CSV file)
+    private Dataset<Row> loadDataset(SparkSession spark) {
+        return spark.read()
+                .format("csv")
+                .option("header", "true")
+                .option("inferSchema", "true")
+                .load("path/to/your/csvfile.csv"); // Replace with your actual data source
+    }
+
+    // Map a Row to a MyEntity object dynamically, handling BLOBs
+    private MyEntity mapRowToEntity(Row row) {
+        MyEntity entity = new MyEntity();
+
+        for (String fieldName : row.schema().fieldNames()) {
+            try {
+                Object value = row.getAs(fieldName);
+
+                // Use reflection to set the field value dynamically
+                Field entityField = MyEntity.class.getDeclaredField(fieldName);
+                entityField.setAccessible(true);
+
+                // Handle BLOB data
+                if ("data".equals(fieldName) && value instanceof String) {
+                    entityField.set(entity, ((String) value).getBytes()); // Convert String to byte[] for BLOB
+                } else {
+                    entityField.set(entity, value);
+                }
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                e.printStackTrace(); // Consider logging the error
+            }
+        }
+
+        return entity;
+    }
+}
+```
+
+### Explanation:
+
+1. **Spring Service (`MyEntityService`)**: A service class handles the interaction with the repository. This class is serializable and can be used within Spark partitions.
+
+2. **Spring Context Singleton (`SpringContextSingleton`)**: This singleton holds a static reference to the Spring `ApplicationContext`. It provides a way to access Spring beans within Spark closures without serializing the entire context.
+
+3. **Initialization in `SparkRunner`**: The Spring context is initialized once at the start of the `run` method using the `SpringContextSingleton`. Inside each partition, the service is retrieved using this singleton.
+
+4. **Partition Processing**: Each partition calls the `saveEntity` method of the `MyEntityService` service, which performs the upsert operation using the Spring Data JPA repository.
+
+### Additional Considerations:
+
+- **Thread Safety**: Ensure that the operations within the service are thread-safe since Spark may execute these in parallel.
+- **Connection Pooling**: Configure your JPA implementation to handle multiple concurrent connections efficiently, especially when working with large datasets.
+- **Logging and Monitoring**: Implement logging to monitor the execution of upsert operations and to capture any errors or performance bottlenecks.
+- **Error Handling**: Consider adding robust error handling to manage exceptions that may arise during partition processing, especially around database operations.
+
+This approach ensures that your application leverages Spring's dependency management while conforming to Spark's serialization requirements, allowing efficient parallel processing and database interaction.

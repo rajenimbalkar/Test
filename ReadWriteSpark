@@ -1,0 +1,196 @@
+To handle database configurations in a more secure and environment-specific way, it's common to use Spring Boot's properties files along with encryption for sensitive information like passwords. Additionally, handling SQL exceptions like duplicates or integrity violations is essential for maintaining data integrity and robustness in your application.
+
+Here's how you can integrate Spring Boot properties with encrypted passwords and handle SQL exceptions in a Spark-based Java application.
+
+### Step 1: Reading Database Configuration from Spring Boot Properties
+
+1. **Create a `application.properties` or `application.yml` file** for each environment (e.g., development, testing, production). Example of a `application.properties` file:
+
+    ```properties
+    # Database Configuration
+    db.url=jdbc:postgresql://<db-url>:5432/<db-name>
+    db.user=<username>
+    db.password={cipher}ENCRYPTED_PASSWORD
+    db.driver=org.postgresql.Driver
+
+    # Encryption Key
+    encryption.key=yourEncryptionKeyHere
+    ```
+
+    In the above example, `{cipher}ENCRYPTED_PASSWORD` is a placeholder for your encrypted password. You'll replace `ENCRYPTED_PASSWORD` with the actual encrypted value.
+
+2. **Use Spring Boot's configuration management** to load these properties into your Java application. To decrypt the password, you can use Spring's support for Jasypt (Java Simplified Encryption) or a custom decryption method.
+
+### Step 2: Implementing a Singleton DatabaseConfig Class with Spring
+
+To handle encrypted passwords and Spring Boot properties, you can use a configuration class that integrates with Spring. Here’s how you can set up the `DatabaseConfig` class:
+
+```java
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.stereotype.Component;
+
+import java.util.Properties;
+
+@Component
+public class DatabaseConfig {
+    private static DatabaseConfig instance;
+    private Properties connectionProperties;
+    private String url;
+
+    @Value("${db.url}")
+    private String dbUrl;
+
+    @Value("${db.user}")
+    private String dbUser;
+
+    @Value("${db.password}")
+    private String dbPassword;
+
+    @Value("${db.driver}")
+    private String dbDriver;
+
+    @Value("${encryption.key}")
+    private String encryptionKey;
+
+    // Private constructor to restrict instantiation
+    private DatabaseConfig() {
+        this.url = dbUrl;
+        this.connectionProperties = new Properties();
+        this.connectionProperties.put("user", dbUser);
+        this.connectionProperties.put("password", decryptPassword(dbPassword));
+        this.connectionProperties.put("driver", dbDriver);
+    }
+
+    // Public method to provide access to the singleton instance
+    public static DatabaseConfig getInstance() {
+        if (instance == null) {
+            synchronized (DatabaseConfig.class) {
+                if (instance == null) {
+                    instance = new DatabaseConfig();
+                }
+            }
+        }
+        return instance;
+    }
+
+    // Method to decrypt the password
+    private String decryptPassword(String encryptedPassword) {
+        // Implement your decryption logic here using encryptionKey
+        // Example using a simple decryption utility method
+        return DecryptionUtil.decrypt(encryptedPassword, encryptionKey);
+    }
+
+    // Getter for connection properties
+    public Properties getConnectionProperties() {
+        return connectionProperties;
+    }
+
+    // Getter for URL
+    public String getUrl() {
+        return url;
+    }
+}
+```
+
+### Step 3: Decryption Utility
+
+Implement a simple decryption utility class. Replace this with your actual encryption/decryption logic, such as using Jasypt or another library.
+
+```java
+public class DecryptionUtil {
+    public static String decrypt(String encryptedPassword, String encryptionKey) {
+        // Replace this with actual decryption logic
+        // For example, using Jasypt or any other encryption standard
+        return "decryptedPassword"; // Placeholder
+    }
+}
+```
+
+### Step 4: Handling SQL Exceptions in Spark Application
+
+When working with Spark and JDBC, handling SQL exceptions is crucial, especially for integrity constraints like duplicates. You can use Spark’s built-in exception handling or JDBC error codes to manage these scenarios.
+
+In the main Spark application class:
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import static org.apache.spark.sql.functions.*;
+
+@SpringBootApplication
+public class SparkUpsertExample {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SparkUpsertExample.class, args);
+
+        // Initialize Spark session
+        SparkSession spark = SparkSession.builder()
+                .appName("Spark Upsert Example")
+                .master("spark://<master-url>:7077") // Replace with your Spark master URL
+                .getOrCreate();
+
+        // Get the singleton instance of DatabaseConfig
+        DatabaseConfig dbConfig = DatabaseConfig.getInstance();
+
+        try {
+            // Read existing data from the target table
+            Dataset<Row> existingData = spark.read()
+                    .jdbc(dbConfig.getUrl(), "target_table", dbConfig.getConnectionProperties());
+
+            // Read new data to be upserted
+            Dataset<Row> newData = spark.read()
+                    .jdbc(dbConfig.getUrl(), "new_data_table", dbConfig.getConnectionProperties());
+
+            // Define the key columns to join on (e.g., "id" and "type")
+            String[] joinKeys = {"id", "type"};
+
+            // Perform the upsert operation with multiple join keys
+            Dataset<Row> mergedData = newData.alias("new")
+                    .join(existingData.alias("existing"),
+                            col("new." + joinKeys[0]).equalTo(col("existing." + joinKeys[0]))
+                                    .and(col("new." + joinKeys[1]).equalTo(col("existing." + joinKeys[1]))),
+                            "outer")
+                    .selectExpr(
+                            "coalesce(new.id, existing.id) as id",
+                            "coalesce(new.type, existing.type) as type",
+                            "coalesce(new.value, existing.value) as value",
+                            "case when new.id is not null then new.timestamp else existing.timestamp end as timestamp"
+                    );
+
+            // Write the merged data back to the target table
+            mergedData.write()
+                    .jdbc(dbConfig.getUrl(), "target_table", dbConfig.getConnectionProperties());
+        } catch (Exception e) {
+            if (e.getCause() instanceof java.sql.SQLIntegrityConstraintViolationException) {
+                // Handle duplicate key or integrity constraint violation
+                System.err.println("SQL Integrity Constraint Violation: " + e.getMessage());
+                // Implement your logic for handling duplicates or rollback
+            } else {
+                // Handle other exceptions
+                e.printStackTrace();
+            }
+        } finally {
+            // Stop the Spark session
+            spark.stop();
+        }
+    }
+}
+```
+
+### Key Points:
+
+1. **Spring Boot Integration**: Use Spring Boot's configuration management to read database properties from external files, allowing you to handle different environments easily.
+
+2. **Encrypted Passwords**: Use a utility class or library to decrypt passwords. The `DatabaseConfig` singleton class handles decryption internally.
+
+3. **Exception Handling**: Use try-catch blocks to handle SQL exceptions, particularly integrity constraint violations. This helps maintain data integrity by preventing duplicate entries or handling rollbacks.
+
+4. **Spring Boot Application**: Annotate the main class with `@SpringBootApplication` to enable Spring Boot's features, and initialize the application with `SpringApplication.run()`.
+
+5. **Transaction Management**: Consider implementing more advanced transaction management if needed, possibly integrating with Spring’s transaction management features, depending on the complexity and requirements of your use case.
+
+This setup provides a robust and scalable way to handle database configurations, sensitive information, and SQL exceptions in a Spark application, integrated with Spring Boot for better configuration management.

@@ -1,0 +1,75 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.SaveMode;
+import org.apache.spark.sql.Column;
+import static org.apache.spark.sql.functions.*;
+import java.util.Properties;
+import java.util.List;
+
+public class SparkUpsertDynamicColumnsExample {
+
+    public static void main(String[] args) {
+        // Initialize Spark Session
+        SparkSession spark = SparkSession.builder()
+                .appName("Spark Upsert with Dynamic Columns Example")
+                .master("local[*]")  // Set appropriate master for your cluster
+                .getOrCreate();
+
+        // JDBC connection properties
+        Properties connectionProperties = new Properties();
+        connectionProperties.put("user", "db_user");
+        connectionProperties.put("password", "db_password");
+        connectionProperties.put("driver", "com.ibm.db2.jcc.DB2Driver");
+
+        // JDBC URL for DB2
+        String jdbcUrl = "jdbc:db2://<hostname>:<port>/<database>";
+
+        // Step 1: Read the existing data (target table) from DB2
+        Dataset<Row> targetDF = spark.read()
+                .jdbc(jdbcUrl, "target_table", connectionProperties);
+
+        // Step 2: Load new data (source) - can be from a file, DB, etc.
+        Dataset<Row> sourceDF = spark.read().parquet("/path/to/source_data");
+
+        // Step 3: Get the common columns (excluding the keys) to merge dynamically
+        // Assuming the keys are "key1", "key2", "key3", these won't be merged
+        List<String> sourceColumns = List.of(sourceDF.columns());
+        List<String> targetColumns = List.of(targetDF.columns());
+
+        // Step 4: Perform full outer join on keys
+        Dataset<Row> joinedDF = sourceDF.join(targetDF,
+                sourceDF.col("key1").equalTo(targetDF.col("key1"))
+                        .and(sourceDF.col("key2").equalTo(targetDF.col("key2")))
+                        .and(sourceDF.col("key3").equalTo(targetDF.col("key3"))),
+                "full_outer"
+        );
+
+        // Step 5: Dynamically build the coalesced columns for the join
+        Column[] mergedColumns = new Column[sourceColumns.size()];
+        
+        int i = 0;
+        for (String column : sourceColumns) {
+            if (!column.equals("key1") && !column.equals("key2") && !column.equals("key3")) {  // Exclude keys
+                // Use coalesce to prefer source value, fallback to target value
+                mergedColumns[i] = coalesce(sourceDF.col(column), targetDF.col(column)).alias(column);
+                i++;
+            } else {
+                // For key columns, ensure they remain in the merged dataset as is
+                mergedColumns[i] = coalesce(sourceDF.col(column), targetDF.col(column)).alias(column);
+                i++;
+            }
+        }
+
+        // Apply the coalesced columns dynamically
+        Dataset<Row> mergedDF = joinedDF.select(mergedColumns);
+
+        // Step 6: Write the merged DataFrame back into the target table
+        mergedDF.write()
+                .mode(SaveMode.Overwrite)  // Overwrite mode to replace the old data
+                .jdbc(jdbcUrl, "target_table", connectionProperties);
+
+        // Close the Spark session
+        spark.stop();
+    }
+}

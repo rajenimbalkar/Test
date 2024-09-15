@@ -1,0 +1,94 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+
+import java.util.*;
+import java.sql.Timestamp;
+
+public class SparkInsertUtil {
+
+    // Generic method to insert a map of column-value pairs into a database table
+    public static void insertMapToDatabase(Map<String, Object> columnValueMap, 
+                                           String tableName, 
+                                           String jdbcUrl, 
+                                           Properties connectionProperties) {
+        // Step 1: Initialize Spark Session
+        SparkSession spark = SparkSession.builder()
+                .appName("Insert Map to DB")
+                .master("local[*]")  // Change to your cluster configuration
+                .getOrCreate();
+
+        // Step 2: Dynamically build the schema (StructType) based on the map keys and types
+        List<StructField> fields = new ArrayList<>();
+        List<Object> rowData = new ArrayList<>();
+        
+        for (Map.Entry<String, Object> entry : columnValueMap.entrySet()) {
+            String columnName = entry.getKey();
+            Object value = entry.getValue();
+            
+            // Dynamically infer data types and create schema
+            if (value instanceof String) {
+                fields.add(DataTypes.createStructField(columnName, DataTypes.StringType, true));
+            } else if (value instanceof Integer) {
+                fields.add(DataTypes.createStructField(columnName, DataTypes.IntegerType, true));
+            } else if (value instanceof Long) {
+                fields.add(DataTypes.createStructField(columnName, DataTypes.LongType, true));
+            } else if (value instanceof Double) {
+                fields.add(DataTypes.createStructField(columnName, DataTypes.DoubleType, true));
+            } else if (value instanceof Float) {
+                fields.add(DataTypes.createStructField(columnName, DataTypes.FloatType, true));
+            } else if (value instanceof Timestamp) {
+                fields.add(DataTypes.createStructField(columnName, DataTypes.TimestampType, true));
+            } else {
+                // Handle other data types or set default as StringType
+                fields.add(DataTypes.createStructField(columnName, DataTypes.StringType, true));
+            }
+            
+            // Add the value to rowData list
+            rowData.add(value);
+        }
+
+        // Step 3: Create the schema and row
+        StructType schema = DataTypes.createStructType(fields);
+        Row row = RowFactory.create(rowData.toArray());
+
+        // Step 4: Create a DataFrame using the row and schema
+        Dataset<Row> df = spark.createDataFrame(Collections.singletonList(row), schema);
+
+        // Step 5: Show the DataFrame for debugging (optional)
+        df.show();
+
+        // Step 6: Write the DataFrame to the database using JDBC
+        df.write()
+                .mode("append")  // Use "append" mode to insert data
+                .jdbc(jdbcUrl, tableName, connectionProperties);
+
+        // Step 7: Stop the Spark session
+        spark.stop();
+    }
+
+    public static void main(String[] args) {
+        // Example usage of the generic method
+        
+        // Step 1: Create a map of column names and values
+        Map<String, Object> columnValueMap = new HashMap<>();
+        columnValueMap.put("name", "John Doe");
+        columnValueMap.put("age", 30);
+        columnValueMap.put("created_at", new Timestamp(System.currentTimeMillis()));
+
+        // Step 2: JDBC connection properties
+        String jdbcUrl = "jdbc:mysql://localhost:3306/your_database";  // Change to your database URL
+        String tableName = "your_table";  // Change to your table name
+        
+        Properties connectionProperties = new Properties();
+        connectionProperties.put("user", "your_user");  // Change to your DB username
+        connectionProperties.put("password", "your_password");  // Change to your DB password
+
+        // Step 3: Call the method to insert data into the database
+        insertMapToDatabase(columnValueMap, tableName, jdbcUrl, connectionProperties);
+    }
+}

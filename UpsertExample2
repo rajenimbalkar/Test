@@ -1,0 +1,66 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Properties;
+
+@Repository
+public class EmployeeDAO {
+
+    @Autowired
+    private SparkSession sparkSession;
+
+    private final String jdbcUrl = "jdbc:db2://<DB2_HOST>:<DB2_PORT>/<DB2_DATABASE>";
+    private final Properties connectionProperties = new Properties();
+
+    public EmployeeDAO() {
+        connectionProperties.put("user", "your_db_username");
+        connectionProperties.put("password", "your_db_password");
+        connectionProperties.put("driver", "com.ibm.db2.jcc.DB2Driver");
+    }
+
+    // READ: Read from the database using Spark
+    public Dataset<Row> readEmployees() {
+        return sparkSession.read()
+                .jdbc(jdbcUrl, "employee_table", connectionProperties);
+    }
+
+    // WRITE: Write DataFrame to the database using Spark
+    public void writeEmployees(Dataset<Row> employeesDF) {
+        employeesDF.write()
+                .mode("append")  // Use "overwrite" for complete replacement
+                .jdbc(jdbcUrl, "employee_table", connectionProperties);
+    }
+
+    // UPSERT: Insert or update employee data using JDBC PreparedStatement
+    public void upsertEmployee(String employeeId, String name, double salary, int departmentId) {
+        // Establish JDBC connection
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, connectionProperties)) {
+            String sql = "MERGE INTO employee_table AS t USING " +
+                         "(VALUES (?, ?, ?, ?)) AS vals(employee_id, name, salary, department_id) " +
+                         "ON t.employee_id = vals.employee_id " +
+                         "WHEN MATCHED THEN UPDATE SET t.name = vals.name, t.salary = vals.salary, t.department_id = vals.department_id " +
+                         "WHEN NOT MATCHED THEN INSERT (employee_id, name, salary, department_id) " +
+                         "VALUES (vals.employee_id, vals.name, vals.salary, vals.department_id);";
+
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+                // Set parameters
+                preparedStatement.setString(1, employeeId);
+                preparedStatement.setString(2, name);
+                preparedStatement.setDouble(3, salary);
+                preparedStatement.setInt(4, departmentId);
+
+                // Execute the query
+                preparedStatement.executeUpdate();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+}

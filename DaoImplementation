@@ -1,0 +1,290 @@
+To implement the **DAO (Data Access Object) layer** using **JDBC Connection** and **PreparedStatement** to handle **read**, **write**, and **upsert** operations in a **Spring Boot** application with **Apache Spark** in a distributed environment, we need to take several factors into account. Here's how you can structure this using Spark for distributed data processing and JDBC for handling the database operations.
+
+We'll implement the following:
+- **Read**: Fetch data from the database using Spark.
+- **Write**: Insert new records into the database.
+- **Upsert (Insert or Update)**: Handle inserting or updating records based on whether they exist.
+
+### Steps
+
+1. **Initialize SparkSession**: Use `SparkSession` to read/write data from the database.
+2. **JDBC Connection for Updates**: Use **JDBC Connection** and **PreparedStatement** for upsert operations.
+3. **DAO Layer**: The DAO will use **Spark SQL** for reading and writing, and **JDBC PreparedStatement** for the upsert logic.
+
+### Example Implementation
+
+#### 1. Spring Boot Dependencies
+Add the following dependencies to `pom.xml`:
+
+```xml
+<dependencies>
+    <!-- Spring Boot -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+
+    <!-- Apache Spark -->
+    <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-core_2.12</artifactId>
+        <version>3.1.1</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-sql_2.12</artifactId>
+        <version>3.1.1</version>
+    </dependency>
+
+    <!-- Database Driver (DB2, MySQL, etc.) -->
+    <dependency>
+        <groupId>com.ibm.db2</groupId>
+        <artifactId>db2jcc</artifactId>
+        <version>11.5.0.0</version>
+    </dependency>
+
+    <!-- Lombok (Optional) -->
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <optional>true</optional>
+    </dependency>
+</dependencies>
+```
+
+#### 2. Spark Configuration Class
+
+```java
+import org.apache.spark.sql.SparkSession;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class SparkConfig {
+
+    @Bean
+    public SparkSession sparkSession() {
+        return SparkSession.builder()
+                .appName("Spring Boot Spark App")
+                .master("local[*]")  // Adjust for production
+                .getOrCreate();
+    }
+}
+```
+
+#### 3. DAO Layer Implementation
+
+##### `EmployeeDAO.java`
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Properties;
+
+@Repository
+public class EmployeeDAO {
+
+    @Autowired
+    private SparkSession sparkSession;
+
+    private final String jdbcUrl = "jdbc:db2://<DB2_HOST>:<DB2_PORT>/<DB2_DATABASE>";
+    private final Properties connectionProperties = new Properties();
+
+    public EmployeeDAO() {
+        connectionProperties.put("user", "your_db_username");
+        connectionProperties.put("password", "your_db_password");
+        connectionProperties.put("driver", "com.ibm.db2.jcc.DB2Driver");
+    }
+
+    // READ: Read from the database using Spark
+    public Dataset<Row> readEmployees() {
+        return sparkSession.read()
+                .jdbc(jdbcUrl, "employee_table", connectionProperties);
+    }
+
+    // WRITE: Write DataFrame to the database using Spark
+    public void writeEmployees(Dataset<Row> employeesDF) {
+        employeesDF.write()
+                .mode("append")  // Use "overwrite" for complete replacement
+                .jdbc(jdbcUrl, "employee_table", connectionProperties);
+    }
+
+    // UPSERT: Insert or update employee data using JDBC PreparedStatement
+    public void upsertEmployee(String employeeId, String name, double salary, int departmentId) {
+        // Establish JDBC connection
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, connectionProperties)) {
+            String sql = "MERGE INTO employee_table AS t USING " +
+                         "(VALUES (?, ?, ?, ?)) AS vals(employee_id, name, salary, department_id) " +
+                         "ON t.employee_id = vals.employee_id " +
+                         "WHEN MATCHED THEN UPDATE SET t.name = vals.name, t.salary = vals.salary, t.department_id = vals.department_id " +
+                         "WHEN NOT MATCHED THEN INSERT (employee_id, name, salary, department_id) " +
+                         "VALUES (vals.employee_id, vals.name, vals.salary, vals.department_id);";
+
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+                // Set parameters
+                preparedStatement.setString(1, employeeId);
+                preparedStatement.setString(2, name);
+                preparedStatement.setDouble(3, salary);
+                preparedStatement.setInt(4, departmentId);
+
+                // Execute the query
+                preparedStatement.executeUpdate();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+#### 4. Service Layer
+
+The service layer will interact with the DAO layer to provide business logic. This layer is essential to decouple business logic from data access.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+@Service
+public class EmployeeService {
+
+    @Autowired
+    private EmployeeDAO employeeDAO;
+
+    // Fetch all employees
+    public Dataset<Row> getAllEmployees() {
+        return employeeDAO.readEmployees();
+    }
+
+    // Save new employees (bulk write)
+    public void saveEmployees(Dataset<Row> employeeDF) {
+        employeeDAO.writeEmployees(employeeDF);
+    }
+
+    // Update or insert an employee (upsert logic)
+    public void upsertEmployee(String employeeId, String name, double salary, int departmentId) {
+        employeeDAO.upsertEmployee(employeeId, name, salary, departmentId);
+    }
+}
+```
+
+#### 5. Controller Layer
+
+The controller layer will expose the service methods via REST endpoints.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/employees")
+public class EmployeeController {
+
+    @Autowired
+    private EmployeeService employeeService;
+
+    // Fetch all employees
+    @GetMapping("/all")
+    public String getAllEmployees() {
+        Dataset<Row> employeesDF = employeeService.getAllEmployees();
+        return employeesDF.showString(20, 0, false);  // Returns a string representation of the DataFrame
+    }
+
+    // Save new employees
+    @PostMapping("/save")
+    public String saveEmployees(@RequestBody List<Employee> employees) {
+        // Convert the list of employees to a DataFrame
+        Dataset<Row> employeeDF = SparkSession.builder().getOrCreate().createDataFrame(employees, Employee.class);
+        employeeService.saveEmployees(employeeDF);
+        return "Employees saved successfully!";
+    }
+
+    // Upsert (update or insert) an employee
+    @PostMapping("/upsert")
+    public String upsertEmployee(@RequestBody Employee employee) {
+        employeeService.upsertEmployee(employee.getEmployeeId(), employee.getName(), employee.getSalary(), employee.getDepartmentId());
+        return "Employee upserted successfully!";
+    }
+}
+```
+
+#### 6. Employee Model
+
+The `Employee` class defines the structure of the employee entity.
+
+```java
+import java.io.Serializable;
+
+public class Employee implements Serializable {
+    private String employeeId;
+    private String name;
+    private double salary;
+    private int departmentId;
+
+    // Constructors, Getters, and Setters
+    public Employee(String employeeId, String name, double salary, int departmentId) {
+        this.employeeId = employeeId;
+        this.name = name;
+        this.salary = salary;
+        this.departmentId = departmentId;
+    }
+
+    public String getEmployeeId() {
+        return employeeId;
+    }
+
+    public void setEmployeeId(String employeeId) {
+        this.employeeId = employeeId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public double getSalary() {
+        return salary;
+    }
+
+    public void setSalary(double salary) {
+        this.salary = salary;
+    }
+
+    public int getDepartmentId() {
+        return departmentId;
+    }
+
+    public void setDepartmentId(int departmentId) {
+        this.departmentId = departmentId;
+    }
+}
+```
+
+### Key Concepts
+
+1. **Read Operation**: Spark reads the data from the database into a **DataFrame** for further distributed processing.
+   
+2. **Write Operation**: Spark can write a distributed **DataFrame** to the database using JDBC.
+
+3. **Upsert Operation**: The **upsert** logic is handled by JDBC `PreparedStatement` and **MERGE** SQL. In this solution, Spark is used for reading and writing distributed data, while **JDBC** is used for the row-level **upsert**.
+
+### Efficiency Considerations
+
+- **Distributed Reads/Writes**: Spark handles large datasets in a distributed manner, making it ideal for large-scale reads and writes.
+- **Batch Processing for Upserts**: For better performance

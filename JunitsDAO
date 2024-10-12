@@ -1,0 +1,170 @@
+To write tests for the `readFromJDBC`, `writeToJDBC`, and `upsertData` methods of the `MyDAO` class, you will need to mock different parts of the code based on the following scenarios:
+
+1. **For `readFromJDBC()`**: Mock the `SparkSession` and `DataFrameReader` objects to simulate reading data from a JDBC source.
+   
+2. **For `writeToJDBC()`**: Mock the `SparkSession` and `DataFrameWriter` objects to simulate writing data to a JDBC source.
+   
+3. **For `upsertData()`**: Mock the `Connection`, `PreparedStatement`, and the static `DriverManager.getConnection()` method.
+
+Let's write the test cases for all three methods.
+
+### DAO Class Recap
+
+```java
+import org.apache.spark.sql.SparkSession;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Properties;
+
+public class MyDAO {
+
+    private String jdbcUrl;
+    private Properties connectionProperties;
+
+    public MyDAO(String jdbcUrl, Properties connectionProperties) {
+        this.jdbcUrl = jdbcUrl;
+        this.connectionProperties = connectionProperties;
+    }
+
+    public void readFromJDBC(SparkSession sparkSession) {
+        sparkSession.read().jdbc(jdbcUrl, "table", connectionProperties);
+    }
+
+    public void writeToJDBC(SparkSession sparkSession) {
+        sparkSession.write().jdbc(jdbcUrl, "table", connectionProperties);
+    }
+
+    public void upsertData(String query, String data) throws SQLException {
+        Connection connection = DriverManager.getConnection(jdbcUrl, connectionProperties);
+        PreparedStatement stmt = connection.prepareStatement(query);
+        stmt.setString(1, data);
+        stmt.executeUpdate();
+        stmt.close();
+        connection.close();
+    }
+}
+```
+
+### JUnit Test for `readFromJDBC`, `writeToJDBC`, and `upsertData`
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.DataFrameReader;
+import org.apache.spark.sql.DataFrameWriter;
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.Properties;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
+
+public class MyDAOTest {
+
+    @Test
+    public void testReadFromJDBC() {
+        // Step 1: Mock SparkSession and DataFrameReader
+        SparkSession mockSparkSession = mock(SparkSession.class);
+        DataFrameReader mockDataFrameReader = mock(DataFrameReader.class);
+
+        // Step 2: Mock the behavior of Spark's read() and jdbc()
+        when(mockSparkSession.read()).thenReturn(mockDataFrameReader);
+        when(mockDataFrameReader.jdbc(anyString(), anyString(), any(Properties.class))).thenReturn(mock(Dataset.class));
+
+        // Step 3: Create the DAO instance
+        Properties connectionProperties = new Properties();
+        MyDAO dao = new MyDAO("jdbc:mysql://localhost:3306/mydb", connectionProperties);
+
+        // Step 4: Call the readFromJDBC method
+        dao.readFromJDBC(mockSparkSession);
+
+        // Step 5: Verify that the read and jdbc methods were called correctly
+        verify(mockSparkSession, times(1)).read();
+        verify(mockDataFrameReader, times(1)).jdbc(eq("jdbc:mysql://localhost:3306/mydb"), eq("table"), eq(connectionProperties));
+    }
+
+    @Test
+    public void testWriteToJDBC() {
+        // Step 1: Mock SparkSession and DataFrameWriter
+        SparkSession mockSparkSession = mock(SparkSession.class);
+        DataFrameWriter mockDataFrameWriter = mock(DataFrameWriter.class);
+
+        // Step 2: Mock the behavior of Spark's write() and jdbc()
+        when(mockSparkSession.write()).thenReturn(mockDataFrameWriter);
+        when(mockDataFrameWriter.jdbc(anyString(), anyString(), any(Properties.class))).thenReturn(null);
+
+        // Step 3: Create the DAO instance
+        Properties connectionProperties = new Properties();
+        MyDAO dao = new MyDAO("jdbc:mysql://localhost:3306/mydb", connectionProperties);
+
+        // Step 4: Call the writeToJDBC method
+        dao.writeToJDBC(mockSparkSession);
+
+        // Step 5: Verify that the write and jdbc methods were called correctly
+        verify(mockSparkSession, times(1)).write();
+        verify(mockDataFrameWriter, times(1)).jdbc(eq("jdbc:mysql://localhost:3306/mydb"), eq("table"), eq(connectionProperties));
+    }
+
+    @Test
+    public void testUpsertData() throws SQLException {
+        // Step 1: Mock Connection and PreparedStatement
+        Connection mockConnection = mock(Connection.class);
+        PreparedStatement mockPreparedStatement = mock(PreparedStatement.class);
+
+        // Step 2: Mock DriverManager.getConnection() to return the mock Connection
+        try (MockedStatic<DriverManager> driverManagerMockedStatic = Mockito.mockStatic(DriverManager.class)) {
+            driverManagerMockedStatic.when(() -> DriverManager.getConnection(anyString(), any(Properties.class)))
+                                     .thenReturn(mockConnection);
+
+            // Step 3: Stub the prepareStatement and executeUpdate behavior
+            when(mockConnection.prepareStatement(anyString())).thenReturn(mockPreparedStatement);
+
+            // Step 4: Create the DAO instance
+            Properties connectionProperties = new Properties();
+            MyDAO dao = new MyDAO("jdbc:mysql://localhost:3306/mydb", connectionProperties);
+
+            // Step 5: Call the upsertData method
+            dao.upsertData("INSERT INTO table (column) VALUES (?)", "testData");
+
+            // Step 6: Verify that the connection, preparedStatement, and methods were called correctly
+            driverManagerMockedStatic.verify(() -> DriverManager.getConnection("jdbc:mysql://localhost:3306/mydb", connectionProperties));
+            verify(mockConnection, times(1)).prepareStatement("INSERT INTO table (column) VALUES (?)");
+            verify(mockPreparedStatement, times(1)).setString(1, "testData");
+            verify(mockPreparedStatement, times(1)).executeUpdate();
+            verify(mockPreparedStatement, times(1)).close();
+            verify(mockConnection, times(1)).close();
+        }
+    }
+}
+```
+
+### Explanation
+
+1. **Testing `readFromJDBC()`**:
+   - Mock `SparkSession` and `DataFrameReader` to simulate reading from JDBC.
+   - Verify that the `read()` and `jdbc()` methods are invoked with the correct parameters.
+
+2. **Testing `writeToJDBC()`**:
+   - Mock `SparkSession` and `DataFrameWriter` to simulate writing to JDBC.
+   - Verify that the `write()` and `jdbc()` methods are invoked with the correct parameters.
+
+3. **Testing `upsertData()`**:
+   - Mock the `Connection` and `PreparedStatement` objects.
+   - Use `MockedStatic` to mock the `DriverManager.getConnection()` static method.
+   - Verify that the `Connection`, `PreparedStatement`, and the upsert operations (`setString()`, `executeUpdate()`, `close()`) are invoked as expected.
+
+### Key Points:
+- **Mocking SparkSession**: You mock `read()` and `write()` methods for the Spark operations, and verify that the `jdbc()` operations are invoked with correct parameters.
+- **Mocking Static Methods**: Use `MockedStatic` to mock the static `DriverManager.getConnection()` method, which allows you to control how the `Connection` object is created in the `upsertData()` method.
+- **Mocking JDBC Operations**: Mock the `Connection` and `PreparedStatement` to simulate the database interaction without needing a real database.
+
+By using this approach, you isolate the behavior of the `MyDAO` class and ensure that the test verifies the correct interactions with the SparkSession and JDBC components.

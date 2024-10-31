@@ -1,0 +1,76 @@
+from airflow import DAG
+from airflow.hooks.SFTPHook import SFTPHook
+from airflow.hooks.S3Hook import S3Hook
+from airflow.operators.python import PythonOperator
+from airflow.models import Variable
+from datetime import datetime
+import os
+
+def read_sftp_inbox():
+    # Fetch variables from Airflow
+    sftp_conn_id = Variable.get("sftp_conn_id")
+    sftp_inbox_path = Variable.get("sftp_inbox_path")
+    
+    # Initialize SFTP hook
+    sftp_hook = SFTPHook(sftp_conn_id)
+    
+    # List files in SFTP inbox
+    files = sftp_hook.list_directory(sftp_inbox_path)
+    
+    # Filter files (optional)
+    files = [f for f in files if not f.startswith('.')]
+    
+    return files
+
+def copy_to_s3(filename):
+    # Fetch variables from Airflow
+    sftp_conn_id = Variable.get("sftp_conn_id")
+    sftp_inbox_path = Variable.get("sftp_inbox_path")
+    s3_conn_id = Variable.get("s3_conn_id")
+    s3_bucket = Variable.get("s3_bucket")
+    s3_folder = Variable.get("s3_folder")
+    
+    # Initialize SFTP and S3 hooks
+    sftp_hook = SFTPHook(sftp_conn_id)
+    s3_hook = S3Hook(aws_conn_id=s3_conn_id)
+    
+    # Define SFTP and S3 paths
+    sftp_filepath = os.path.join(sftp_inbox_path, filename)
+    s3_key = f"{s3_folder}/{filename}"
+    
+    # Download file from SFTP
+    with sftp_hook.get_conn() as sftp_client:
+        with sftp_client.file(sftp_filepath, mode='rb') as file_obj:
+            # Upload file to S3
+            s3_hook.load_file_obj(file_obj, bucket_name=s3_bucket, key=s3_key, replace=True)
+
+def main_process(**kwargs):
+    # Read files from SFTP inbox
+    files = read_sftp_inbox()
+    
+    # Copy each file to S3
+    for filename in files:
+        copy_to_s3(filename)
+
+# Define the DAG
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+with DAG(
+    dag_id='sftp_to_s3_dag',
+    default_args=default_args,
+    schedule_interval='@daily',
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
+) as dag:
+
+    process_files = PythonOperator(
+        task_id='process_files',
+        python_callable=main_process,
+        provide_context=True,
+    )
+
+    process_files

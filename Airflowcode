@@ -1,0 +1,33 @@
+from airflow.hooks.S3_hook import S3Hook
+from airflow.providers.sftp.hooks.sftp import SFTPHook
+import botocore
+
+def copy_sftp_to_s3(sftp_conn_id, s3_conn_id, sftp_path, s3_bucket, s3_key_prefix):
+    # Initialize SFTP Hook
+    sftp_hook = SFTPHook(sftp_conn_id)
+    
+    with sftp_hook.get_conn() as sftp_client:
+        # List files in the SFTP path
+        files = sftp_client.listdir(sftp_path)
+        
+        for file_name in files:
+            full_sftp_path = f"{sftp_path}/{file_name}"
+            s3_key = f"{s3_key_prefix}/{file_name}"
+            
+            # Open each file on SFTP as a file-like object
+            with sftp_client.open(full_sftp_path, 'rb') as file_obj:
+                
+                # Initialize a new S3Hook and session for each file
+                s3_hook = S3Hook(aws_conn_id=s3_conn_id)
+                config = botocore.config.Config(
+                    retries={'max_attempts': 10, 'mode': 'adaptive'},
+                    connect_timeout=15,
+                    read_timeout=60
+                )
+                
+                # Use S3 session to open a client connection for each file
+                with s3_hook.get_session().client('s3', config=config) as s3_client:
+                    # Load the file object to S3
+                    s3_client.upload_fileobj(Fileobj=file_obj, Bucket=s3_bucket, Key=s3_key)
+                    
+                    print(f"Uploaded {file_name} to s3://{s3_bucket}/{s3_key}")

@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.providers.jdbc.hooks.jdbc import JDBCHook
+from airflow.providers.jdbc.operators.jdbc import JdbcOperator
 from airflow.utils.dates import days_ago
 from airflow.models import Variable
 from airflow.utils.email import send_email
@@ -20,27 +21,25 @@ default_args = {
     "retries": 1,
 }
 
-# Function to delete records older than the purge period and count deleted records
-def delete_old_records(table_name, **kwargs):
-    pg_hook = PostgresHook(postgres_conn_id="your_postgres_connection_id")
-    conn = pg_hook.get_conn()
-    cursor = conn.cursor()
+# SQL Template for deleting records older than the configured months
+DELETE_SQL_TEMPLATE = """
+DELETE FROM {table_name}
+WHERE record_date < CURRENT DATE - {purge_period_months} MONTHS
+"""
 
-    # SQL query to delete records older than the specified period
-    delete_query = f"""
-        DELETE FROM {table_name}
-        WHERE record_date < NOW() - INTERVAL '{purge_period_months} months'
-        RETURNING id;
-    """
-
-    # Execute the delete query and get the count of deleted rows
-    cursor.execute(delete_query)
-    deleted_rows = cursor.rowcount
-    conn.commit()
-
-    # Log the number of deleted records
-    logging.info(f"Deleted {deleted_rows} records from {table_name}.")
-    return {"table_name": table_name, "deleted_count": deleted_rows}
+# Function to get count of deleted records using JdbcOperator
+def delete_and_count_records(table_name, **kwargs):
+    jdbc_hook = JDBCHook(jdbc_conn_id="your_db2_jdbc_connection_id")  # Set your DB2 connection ID here
+    
+    # Delete records and count rows affected
+    delete_sql = DELETE_SQL_TEMPLATE.format(table_name=table_name, purge_period_months=purge_period_months)
+    records_deleted = jdbc_hook.run(delete_sql)
+    
+    # Log the result
+    logging.info(f"Deleted {records_deleted} records from {table_name}.")
+    
+    # Push the result to XCom for reporting in email
+    return {"table_name": table_name, "deleted_count": records_deleted}
 
 # Function to send email with the results of the purge
 def send_report_email(ti, **kwargs):
@@ -77,7 +76,7 @@ with DAG(
     for table in tables_to_purge:
         delete_task = PythonOperator(
             task_id=f"delete_{table}",
-            python_callable=delete_old_records,
+            python_callable=delete_and_count_records,
             op_kwargs={"table_name": table},
             provide_context=True,
         )

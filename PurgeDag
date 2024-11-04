@@ -1,0 +1,93 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.utils.dates import days_ago
+from airflow.models import Variable
+from airflow.utils.email import send_email
+import logging
+
+# Configurable variables from Airflow
+purge_period_months = int(Variable.get("purge_period_months", default_var=13))
+notification_email = Variable.get("notification_email")
+
+# Tables to be purged
+tables_to_purge = ["table1", "table2", "table3", "table4"]
+
+default_args = {
+    "owner": "airflow",
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+}
+
+# Function to delete records older than the purge period and count deleted records
+def delete_old_records(table_name, **kwargs):
+    pg_hook = PostgresHook(postgres_conn_id="your_postgres_connection_id")
+    conn = pg_hook.get_conn()
+    cursor = conn.cursor()
+
+    # SQL query to delete records older than the specified period
+    delete_query = f"""
+        DELETE FROM {table_name}
+        WHERE record_date < NOW() - INTERVAL '{purge_period_months} months'
+        RETURNING id;
+    """
+
+    # Execute the delete query and get the count of deleted rows
+    cursor.execute(delete_query)
+    deleted_rows = cursor.rowcount
+    conn.commit()
+
+    # Log the number of deleted records
+    logging.info(f"Deleted {deleted_rows} records from {table_name}.")
+    return {"table_name": table_name, "deleted_count": deleted_rows}
+
+# Function to send email with the results of the purge
+def send_report_email(ti, **kwargs):
+    success_results = ti.xcom_pull(key="return_value", task_ids=[f"delete_{table}" for table in tables_to_purge])
+    
+    # Determine success or failure for each table
+    failed_tables = [res["table_name"] for res in success_results if res is None]
+    success_counts = {res["table_name"]: res["deleted_count"] for res in success_results if res is not None}
+
+    # Construct email subject and body
+    subject = "Purge DAG Report"
+    if not failed_tables:
+        body = f"Successfully deleted records older than {purge_period_months} months from all tables.\n\n"
+        for table, count in success_counts.items():
+            body += f"Table '{table}': {count} records deleted.\n"
+    else:
+        body = f"Failed to delete records from the following tables: {', '.join(failed_tables)}\n\n"
+        for table, count in success_counts.items():
+            body += f"Table '{table}': {count} records deleted.\n"
+    
+    # Send email
+    send_email(to=notification_email, subject=subject, html_content=body)
+
+# Define the DAG
+with DAG(
+    dag_id="purge_old_records_dag",
+    default_args=default_args,
+    schedule_interval="@monthly",
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    delete_tasks = []
+    for table in tables_to_purge:
+        delete_task = PythonOperator(
+            task_id=f"delete_{table}",
+            python_callable=delete_old_records,
+            op_kwargs={"table_name": table},
+            provide_context=True,
+        )
+        delete_tasks.append(delete_task)
+
+    send_email_task = PythonOperator(
+        task_id="send_report_email",
+        python_callable=send_report_email,
+        provide_context=True,
+    )
+
+    # Set task dependencies
+    delete_tasks >> send_email_task

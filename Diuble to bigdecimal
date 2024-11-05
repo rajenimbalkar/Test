@@ -1,0 +1,128 @@
+Here’s a complete example in Java 17 to dynamically convert `Double` columns to `DecimalType` in a `Dataset<Row>`. We’ll create a class with a method that performs this transformation, and then write a test class to verify the functionality using Spark's testing utilities.
+
+### 1. Main Class: `DoubleToDecimalConverter.java`
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.types.DecimalType;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class DoubleToDecimalConverter {
+
+    /**
+     * Method to convert all Double columns in a Dataset to DecimalType with specified precision and scale.
+     * 
+     * @param df The input Dataset<Row>
+     * @param precision The precision for DecimalType
+     * @param scale The scale for DecimalType
+     * @return A new Dataset<Row> with Double columns converted to DecimalType
+     */
+    public static Dataset<Row> convertDoubleToDecimal(Dataset<Row> df, int precision, int scale) {
+        StructType schema = df.schema();
+        List<String> doubleColumns = new ArrayList<>();
+
+        // Identify Double columns
+        for (StructField field : schema.fields()) {
+            DataType dataType = field.dataType();
+            if (dataType.equals(DataTypes.DoubleType)) {
+                doubleColumns.add(field.name());
+            }
+        }
+
+        // Cast each double column to DecimalType with specified precision and scale
+        Dataset<Row> dfWithDecimals = df;
+        for (String colName : doubleColumns) {
+            dfWithDecimals = dfWithDecimals.withColumn(colName, dfWithDecimals.col(colName).cast(new DecimalType(precision, scale)));
+        }
+
+        return dfWithDecimals;
+    }
+}
+```
+
+### 2. Test Class: `DoubleToDecimalConverterTest.java`
+
+For testing, we’ll use `SparkSession` to create a sample `Dataset<Row>`. We'll verify that the `convertDoubleToDecimal` method correctly converts `Double` columns to `DecimalType`.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.DecimalType;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+public class DoubleToDecimalConverterTest {
+
+    private static SparkSession spark;
+
+    @BeforeAll
+    public static void setUp() {
+        // Initialize SparkSession
+        spark = SparkSession.builder()
+                .appName("DoubleToDecimalConverterTest")
+                .master("local")
+                .getOrCreate();
+    }
+
+    @AfterAll
+    public static void tearDown() {
+        if (spark != null) {
+            spark.stop();
+        }
+    }
+
+    @Test
+    public void testConvertDoubleToDecimal() {
+        // Create a sample Dataset with a Double column
+        Dataset<Row> df = spark.createDataFrame(List.of(
+                RowFactory.create(1, 123.456),
+                RowFactory.create(2, 789.012)
+        ), new StructType()
+                .add("id", DataTypes.IntegerType)
+                .add("amount", DataTypes.DoubleType)
+        );
+
+        // Convert Double columns to DecimalType with specified precision and scale
+        Dataset<Row> convertedDf = DoubleToDecimalConverter.convertDoubleToDecimal(df, 20, 10);
+
+        // Assert that the column has been converted to DecimalType
+        assertEquals(new DecimalType(20, 10), convertedDf.schema().apply("amount").dataType());
+
+        // Print schema and data to verify
+        convertedDf.printSchema();
+        convertedDf.show();
+    }
+}
+```
+
+### Explanation
+
+1. **Main Class (`DoubleToDecimalConverter`)**:
+   - Contains the `convertDoubleToDecimal` method, which identifies `Double` columns and casts them to `DecimalType` with the specified precision and scale.
+
+2. **Test Class (`DoubleToDecimalConverterTest`)**:
+   - Sets up a `SparkSession` for the test.
+   - Creates a sample `Dataset<Row>` with an `amount` column of type `Double`.
+   - Calls `convertDoubleToDecimal` to convert `Double` columns to `DecimalType`.
+   - Verifies that the `amount` column type has been updated to `DecimalType` using an assertion.
+
+3. **Run the Test**:
+   - This test verifies that the column type is correctly converted to `DecimalType` with the specified precision and scale.
+   - Use a test framework like JUnit to execute the test. 
+
+### Notes
+
+- Make sure to add Spark dependencies to your project.
+- This test will print the schema and data so you can manually verify the changes, and it uses assertions to check the expected data types.

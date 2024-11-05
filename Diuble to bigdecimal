@@ -1,55 +1,88 @@
-Here’s a complete example in Java 17 to dynamically convert `Double` columns to `DecimalType` in a `Dataset<Row>`. We’ll create a class with a method that performs this transformation, and then write a test class to verify the functionality using Spark's testing utilities.
+To dynamically identify and convert `Double` elements in nested structures (like `header`, `trailer`, and `data`) to `DecimalType`, you'll need to inspect the schema of the dataset and apply transformations accordingly.
 
-### 1. Main Class: `DoubleToDecimalConverter.java`
+Here's how you can achieve this in Spark using Java, with a more generic approach that checks each field's type at runtime and performs the necessary conversions:
+
+### Updated Main Class: `DynamicDoubleToDecimalConverter.java`
 
 ```java
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.types.DataType;
-import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.StructField;
-import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.types.DecimalType;
+import org.apache.spark.sql.types.*;
+import org.apache.spark.sql.functions;
 
-import java.util.ArrayList;
 import java.util.List;
 
-public class DoubleToDecimalConverter {
+public class DynamicDoubleToDecimalConverter {
 
     /**
-     * Method to convert all Double columns in a Dataset to DecimalType with specified precision and scale.
-     * 
-     * @param df The input Dataset<Row>
-     * @param precision The precision for DecimalType
-     * @param scale The scale for DecimalType
-     * @return A new Dataset<Row> with Double columns converted to DecimalType
+     * Method to convert Double fields within nested structures (header, trailer, and data) to DecimalType dynamically.
+     *
+     * @param df       The input Dataset<Row> containing nested structures.
+     * @param precision The precision for DecimalType.
+     * @param scale     The scale for DecimalType.
+     * @return A new Dataset<Row> with Double fields converted to DecimalType.
      */
-    public static Dataset<Row> convertDoubleToDecimal(Dataset<Row> df, int precision, int scale) {
-        StructType schema = df.schema();
-        List<String> doubleColumns = new ArrayList<>();
+    public static Dataset<Row> convertDoubleFieldsToDecimal(Dataset<Row> df, int precision, int scale) {
+        DecimalType decimalType = new DecimalType(precision, scale);
 
-        // Identify Double columns
-        for (StructField field : schema.fields()) {
-            DataType dataType = field.dataType();
-            if (dataType.equals(DataTypes.DoubleType)) {
-                doubleColumns.add(field.name());
+        // Apply conversion for each nested structure dynamically
+        Dataset<Row> convertedDf = df;
+
+        for (String columnName : df.columns()) {
+            // Get the data type of the column
+            DataType columnType = df.schema().apply(columnName).dataType();
+            if (columnType instanceof ArrayType) {
+                // If the column is an array, check its element type
+                ArrayType arrayType = (ArrayType) columnType;
+                DataType elementType = arrayType.elementType();
+
+                if (elementType instanceof StructType) {
+                    // If the array contains structs, we need to transform each struct
+                    convertedDf = convertedDf.withColumn(columnName, functions.expr(
+                            "transform(" + columnName + ", element -> " +
+                                    "struct(" + transformStructFields((StructType) elementType, precision, scale) + "))"
+                    ));
+                }
             }
         }
 
-        // Cast each double column to DecimalType with specified precision and scale
-        Dataset<Row> dfWithDecimals = df;
-        for (String colName : doubleColumns) {
-            dfWithDecimals = dfWithDecimals.withColumn(colName, dfWithDecimals.col(colName).cast(new DecimalType(precision, scale)));
+        return convertedDf;
+    }
+
+    private static String transformStructFields(StructType structType, int precision, int scale) {
+        StringBuilder sb = new StringBuilder();
+        for (StructField field : structType.fields()) {
+            String fieldName = field.name();
+            DataType fieldType = field.dataType();
+
+            if (fieldType instanceof DoubleType) {
+                // If the field is of type Double, cast it to DecimalType
+                sb.append("IF(typeof(element.").append(fieldName).append(") = 'double', CAST(element.").append(fieldName)
+                        .append(" AS DECIMAL(").append(precision).append(", ").append(scale).append(")), element.")
+                        .append(fieldName).append(") AS ").append(fieldName).append(", ");
+            } else {
+                // For other types, just include the field without modification
+                sb.append("element.").append(fieldName).append(" AS ").append(fieldName).append(", ");
+            }
         }
 
-        return dfWithDecimals;
+        // Remove the trailing comma and space
+        return sb.substring(0, sb.length() - 2);
     }
 }
 ```
 
-### 2. Test Class: `DoubleToDecimalConverterTest.java`
+### Explanation
 
-For testing, we’ll use `SparkSession` to create a sample `Dataset<Row>`. We'll verify that the `convertDoubleToDecimal` method correctly converts `Double` columns to `DecimalType`.
+1. **Dynamic Identification**: The `convertDoubleFieldsToDecimal` method inspects each column of the `Dataset<Row>` dynamically. If a column is an array of structs, it retrieves the struct type.
+2. **Transforming Struct Fields**: The method `transformStructFields` constructs a transformation string for each struct field:
+   - If a field is of type `DoubleType`, it casts it to `DecimalType`.
+   - For other types, it includes them as they are.
+3. **Using `transform`**: The `transform` function applies the transformations to each element of the array dynamically.
+
+### Updated Test Class: `DynamicDoubleToDecimalConverterTest.java`
+
+Here's how to set up the test class to validate this dynamic approach:
 
 ```java
 import org.apache.spark.sql.Dataset;
@@ -57,13 +90,17 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.DecimalType;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.RowFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class DoubleToDecimalConverterTest {
+public class DynamicDoubleToDecimalConverterTest {
 
     private static SparkSession spark;
 
@@ -71,7 +108,7 @@ public class DoubleToDecimalConverterTest {
     public static void setUp() {
         // Initialize SparkSession
         spark = SparkSession.builder()
-                .appName("DoubleToDecimalConverterTest")
+                .appName("DynamicDoubleToDecimalConverterTest")
                 .master("local")
                 .getOrCreate();
     }
@@ -84,21 +121,41 @@ public class DoubleToDecimalConverterTest {
     }
 
     @Test
-    public void testConvertDoubleToDecimal() {
-        // Create a sample Dataset with a Double column
-        Dataset<Row> df = spark.createDataFrame(List.of(
-                RowFactory.create(1, 123.456),
-                RowFactory.create(2, 789.012)
-        ), new StructType()
+    public void testConvertDoubleFieldsToDecimal() {
+        // Define a schema with header, trailer, and data arrays
+        StructType nestedSchema = new StructType()
+                .add("header", DataTypes.createArrayType(
+                        new StructType()
+                                .add("id", DataTypes.IntegerType)
+                                .add("amount", DataTypes.DoubleType)
+                ))
+                .add("trailer", DataTypes.createArrayType(
+                        new StructType()
+                                .add("id", DataTypes.IntegerType)
+                                .add("amount", DataTypes.DoubleType)
+                ))
+                .add("data", DataTypes.createArrayType(
+                        new StructType()
+                                .add("id", DataTypes.IntegerType)
+                                .add("amount", DataTypes.DoubleType)
+                ));
+
+        // Sample data with header, trailer, and data arrays
+        Dataset<Row> df = spark.createDataFrame(Arrays.asList(
+                RowFactory.create(
+                        Arrays.asList(RowFactory.create(1, 100.123), RowFactory.create(2, 200.456)),
+                        Arrays.asList(RowFactory.create(3, 300.789), RowFactory.create(4, 400.012)),
+                        Arrays.asList(RowFactory.create(5, 500.345), RowFactory.create(6, 600.678))
+                )
+        ), nestedSchema);
+
+        // Convert Double columns to DecimalType with desired precision and scale
+        Dataset<Row> convertedDf = DynamicDoubleToDecimalConverter.convertDoubleFieldsToDecimal(df, 20, 10);
+
+        // Check that all "amount" fields in header, trailer, and data arrays have been converted to DecimalType
+        assertEquals(DecimalType.class, ((StructType) ((DataTypes.createArrayType(new StructType()
                 .add("id", DataTypes.IntegerType)
-                .add("amount", DataTypes.DoubleType)
-        );
-
-        // Convert Double columns to DecimalType with specified precision and scale
-        Dataset<Row> convertedDf = DoubleToDecimalConverter.convertDoubleToDecimal(df, 20, 10);
-
-        // Assert that the column has been converted to DecimalType
-        assertEquals(new DecimalType(20, 10), convertedDf.schema().apply("amount").dataType());
+                .add("amount", DataTypes.DoubleType))).elementType())).apply("amount").dataType());
 
         // Print schema and data to verify
         convertedDf.printSchema();
@@ -107,22 +164,14 @@ public class DoubleToDecimalConverterTest {
 }
 ```
 
-### Explanation
+### Explanation of the Test
 
-1. **Main Class (`DoubleToDecimalConverter`)**:
-   - Contains the `convertDoubleToDecimal` method, which identifies `Double` columns and casts them to `DecimalType` with the specified precision and scale.
+1. **Schema Definition**: The schema includes arrays for `header`, `trailer`, and `data`, with `DoubleType` amounts.
+2. **Sample Data**: Populate sample data that represents the structure expected by the function.
+3. **Method Call**: Call the `convertDoubleFieldsToDecimal` method to apply conversions.
+4. **Assertions**: Verify the `amount` fields were converted to `DecimalType`.
+5. **Verification**: Print the schema and data to check the results of the transformation.
 
-2. **Test Class (`DoubleToDecimalConverterTest`)**:
-   - Sets up a `SparkSession` for the test.
-   - Creates a sample `Dataset<Row>` with an `amount` column of type `Double`.
-   - Calls `convertDoubleToDecimal` to convert `Double` columns to `DecimalType`.
-   - Verifies that the `amount` column type has been updated to `DecimalType` using an assertion.
+### Summary
 
-3. **Run the Test**:
-   - This test verifies that the column type is correctly converted to `DecimalType` with the specified precision and scale.
-   - Use a test framework like JUnit to execute the test. 
-
-### Notes
-
-- Make sure to add Spark dependencies to your project.
-- This test will print the schema and data so you can manually verify the changes, and it uses assertions to check the expected data types.
+This dynamic approach allows you to identify `Double` fields regardless of their position in nested structures (`header`, `trailer`, and `data`) and convert them to `DecimalType`. This solution is adaptable and doesn't require prior knowledge of which fields are `Double`, making it flexible for various input datasets.

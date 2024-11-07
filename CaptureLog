@@ -1,0 +1,61 @@
+from airflow import DAG
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.hooks.dbapi_hook import DbApiHook
+from airflow.operators.python import PythonOperator
+from airflow.models import TaskInstance
+from datetime import datetime
+import os
+
+dag = DAG(
+    'spark_log_to_db2',
+    description='Run SparkSubmit and insert Airflow logs into DB2',
+    schedule_interval='@daily',
+    start_date=datetime(2023, 11, 1),
+    catchup=False
+)
+
+def insert_airflow_logs_to_db2(**context):
+    # Fetch the task instance to access logs
+    task_instance = TaskInstance(
+        context['dag'].get_task('spark_submit_task'), 
+        context['execution_date']
+    )
+    log_content = task_instance.log
+
+    # If logs are stored in files, read from the file path
+    log_file_path = task_instance.log_filepath  # adjust based on your log storage
+    if os.path.exists(log_file_path):
+        with open(log_file_path, 'r') as log_file:
+            log_content = log_file.read()
+
+    # Connect to DB2 and insert the log content
+    db2_hook = DbApiHook.get_hook('db2_connection')
+    insert_query = """
+        INSERT INTO airflow_logs (dag_id, task_id, execution_date, log)
+        VALUES (%s, %s, %s, %s)
+    """
+    db2_hook.run(insert_query, parameters=(
+        context['dag'].dag_id,
+        task_instance.task_id,
+        context['execution_date'],
+        log_content
+    ))
+
+# Define your SparkSubmit task
+spark_submit = SparkSubmitOperator(
+    task_id='spark_submit_task',
+    application='/path/to/your/spark_application.py',
+    conn_id='spark_default',
+    dag=dag
+)
+
+# Define the task to insert logs into DB2
+log_to_db2_task = PythonOperator(
+    task_id='insert_airflow_logs_to_db2',
+    python_callable=insert_airflow_logs_to_db2,
+    provide_context=True,
+    dag=dag
+)
+
+# Define the DAG structure
+spark_submit >> log_to_db2_task

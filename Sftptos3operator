@@ -1,0 +1,30 @@
+from airflow import DAG
+from airflow.providers.amazon.aws.transfers.sftp_to_s3 import SFTPToS3Operator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'airflow',
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+}
+
+with DAG(
+    'sftp_to_s3_transfer_dag',
+    default_args=default_args,
+    description='Transfer files from SFTP to S3',
+    schedule_interval=None,
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
+) as dag:
+
+    transfer_files = SFTPToS3Operator(
+        task_id='sftp_to_s3_transfer',
+        sftp_conn_id='sftp_default',  # Airflow connection ID for SFTP
+        s3_conn_id='aws_default',     # Airflow connection ID for AWS S3
+        sftp_path='/path/to/sftp/folder/',  # Folder on the SFTP server
+        s3_bucket='your-s3-bucket-name',    # Name of your S3 bucket
+        s3_key='destination/s3/folder/',    # Destination folder path in S3
+        wildcard_match=True,                # Enables wildcard to match multiple files
+        verify=False,                       # Set to True if you want SSL verification for SFTP
+        replace=True                        # Set to True to overwrite existing files in S3
+    )

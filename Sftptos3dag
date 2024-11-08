@@ -1,0 +1,81 @@
+from airflow import DAG
+from airflow.models import Variable
+from airflow.utils.dates import days_ago
+from airflow.operators.python import PythonOperator
+from airflow.providers.amazon.aws.transfers.sftp_to_s3 import SFTPToS3Operator
+from airflow.providers.sftp.hooks.sftp import SFTPHook
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+import os
+
+# Constants and configuration for SFTP and S3
+SFTP_CONN_ID = 'sftp_default'          # Connection ID for SFTP in Airflow
+S3_CONN_ID = 'aws_default'             # Connection ID for AWS S3 in Airflow
+SFTP_PATH = Variable.get("sftp_outbox_folder")  # Outbox folder path in SFTP
+S3_BUCKET_NAME = Variable.get("s3_bucket_name") # Target S3 bucket name
+S3_FOLDER = Variable.get("s3_target_folder")    # Target folder in S3
+SPARK_APPLICATION_PATH = "/path/to/your/spark/application.py"  # Spark application path
+
+default_args = {
+    'owner': 'airflow',
+    'retries': 2,
+}
+
+def transfer_files_sftp_to_s3(dag):
+    """
+    This function dynamically generates tasks to transfer each file
+    from the SFTP outbox folder to the specified S3 bucket folder.
+    """
+    # Initialize SFTP hook to list files in the outbox directory
+    sftp_hook = SFTPHook(SFTP_CONN_ID)
+    file_list = sftp_hook.list_directory(SFTP_PATH)
+
+    transfer_tasks = []
+
+    # Loop through files and create a task for each file transfer
+    for file_name in file_list:
+        sftp_file_path = os.path.join(SFTP_PATH, file_name)
+        s3_key = f"{S3_FOLDER}/{file_name}"
+
+        # Create a task for each file transfer
+        transfer_task = SFTPToS3Operator(
+            task_id=f'transfer_{file_name}_to_s3',
+            sftp_conn_id=SFTP_CONN_ID,
+            aws_conn_id=S3_CONN_ID,
+            sftp_path=sftp_file_path,
+            s3_bucket=S3_BUCKET_NAME,
+            s3_key=s3_key,
+            replace=True,
+            dag=dag,
+        )
+        
+        transfer_tasks.append(transfer_task)
+    
+    return transfer_tasks
+
+# Define the DAG
+with DAG(
+    'sftp_to_s3_and_spark_submit',
+    default_args=default_args,
+    description='Transfer files from SFTP outbox folder to S3, then run Spark job',
+    schedule_interval='@daily',  # Run daily or configure as needed
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    # Dynamically generate SFTP to S3 tasks
+    transfer_tasks = transfer_files_sftp_to_s3(dag)
+
+    # Spark submit task that runs after all file transfers are complete
+    spark_submit_task = SparkSubmitOperator(
+        task_id='run_spark_job',
+        application=SPARK_APPLICATION_PATH,
+        conn_id='spark_default',  # Spark connection ID
+        executor_memory='2g',
+        driver_memory='2g',
+        num_executors=2,
+        dag=dag,
+    )
+
+    # Set up dependencies: all transfer tasks must complete before Spark job
+    for transfer_task in transfer_tasks:
+        transfer_task >> spark_submit_task

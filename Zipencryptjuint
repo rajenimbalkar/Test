@@ -1,0 +1,91 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Encoders;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.encoders.RowEncoder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import javax.sql.rowset.serial.SerialBlob;
+import java.sql.Blob;
+import java.sql.SQLException;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+public class BlobColumnProcessorTest {
+
+    @Mock
+    private SparkSession sparkSession;
+
+    @InjectMocks
+    private BlobColumnProcessor blobColumnProcessor;
+
+    private Dataset<Row> mockDataset;
+    private Row mockRow;
+    private Blob testBlob;
+    private static final String BLOB_COLUMN_NAME = "blobData";
+
+    @BeforeEach
+    public void setUp() throws Exception {
+        // Initialize BlobColumnProcessor with encryption key setup
+        blobColumnProcessor = new BlobColumnProcessor();
+
+        // Sample data for testing (compressed and encrypted in the actual method)
+        byte[] blobData = "Sample text data for blob".getBytes();
+        testBlob = new SerialBlob(blobData);
+
+        // Mock Row and Dataset
+        mockRow = mock(Row.class);
+        when(mockRow.getAs(BLOB_COLUMN_NAME)).thenReturn(testBlob);
+
+        mockDataset = sparkSession.createDataset(Arrays.asList(mockRow), RowEncoder.apply(mockRow.schema()));
+    }
+
+    @Test
+    public void testZipAndEncryptBlobColumn() throws Exception {
+        // Act: Call zipAndEncryptBlobColumn and verify transformation
+        Dataset<Row> resultDataset = blobColumnProcessor.zipAndEncryptBlobColumn(mockDataset, BLOB_COLUMN_NAME);
+        
+        Row resultRow = resultDataset.collectAsList().get(0);
+        Blob encryptedBlob = resultRow.getAs(BLOB_COLUMN_NAME);
+
+        // Assert: Ensure encrypted blob is not null and different from the original
+        assertNotNull(encryptedBlob, "Encrypted blob should not be null");
+        assertNotEquals(testBlob, encryptedBlob, "Encrypted blob should differ from original data");
+
+        // Verify if compress and encrypt were applied
+        byte[] encryptedData = encryptedBlob.getBytes(1, (int) encryptedBlob.length());
+        assertNotEquals(Base64.getEncoder().encodeToString(testBlob.getBytes(1, (int) testBlob.length())),
+                Base64.getEncoder().encodeToString(encryptedData), "Blob should be transformed");
+    }
+
+    @Test
+    public void testDecryptAndUnzipBlobColumn() throws Exception {
+        // Arrange: Mock zip and encryption process on testBlob
+        Blob encryptedBlob = blobColumnProcessor.zipAndEncryptBlobColumn(mockDataset, BLOB_COLUMN_NAME)
+                                                .collectAsList().get(0).getAs(BLOB_COLUMN_NAME);
+
+        // Set the encrypted blob in a row
+        when(mockRow.getAs(BLOB_COLUMN_NAME)).thenReturn(encryptedBlob);
+
+        // Act: Call decryptAndUnzipBlobColumn to reverse the transformation
+        Row decryptedRow = blobColumnProcessor.decryptAndUnzipBlobColumn(mockRow, BLOB_COLUMN_NAME);
+        Blob decryptedBlob = decryptedRow.getAs(BLOB_COLUMN_NAME);
+
+        // Assert: Ensure the decrypted blob matches the original data
+        assertNotNull(decryptedBlob, "Decrypted blob should not be null");
+        assertEquals(testBlob.length(), decryptedBlob.length(), "Decrypted blob should match original data size");
+        assertArrayEquals(testBlob.getBytes(1, (int) testBlob.length()),
+                decryptedBlob.getBytes(1, (int) decryptedBlob.length()), "Blob contents should match original data");
+    }
+}

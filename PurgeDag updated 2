@@ -1,0 +1,130 @@
+from airflow import DAG
+from airflow.providers.jdbc.operators.jdbc import JdbcOperator
+from airflow.operators.python import PythonOperator
+from airflow.providers.email.operators.email import EmailOperator
+from airflow.models import Variable
+from airflow.utils.dates import days_ago
+import logging
+import json
+
+# DAG default arguments
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 1,
+}
+
+# Define DAG
+with DAG(
+    'db2_purge_job_dag',
+    default_args=default_args,
+    description='Purge old records from DB2 tables with optimized batch processing',
+    schedule_interval='@daily',
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    email_recipient = Variable.get("email_recipient", default_var="dl@example.com")
+
+    # Load purge configuration from Airflow Variable
+    purge_config = json.loads(Variable.get("purge_config"))
+
+    def generate_batch_purge_sql(table_name, date_column, purge_days, batch_size):
+        """
+        Generates the SQL for purging records in batches based on the date column and purge days.
+        """
+        return f"""
+            DELETE FROM {table_name}
+            WHERE {date_column} <= CURRENT DATE - {purge_days} DAYS
+            FETCH FIRST {batch_size} ROWS ONLY;
+        """
+
+    # Dictionary to store task instances and results
+    purge_tasks = {}
+
+    for config in purge_config:
+        table_name = config['table_name']
+        date_column = config['date_column']
+        purge_days = config['purge_days']
+        
+        # Create a task for each table
+        task_id = f"purge_{table_name}_batch"
+        purge_tasks[task_id] = JdbcOperator(
+            task_id=task_id,
+            jdbc_conn_id='db2_default',
+            sql=lambda table=table_name, date_column=date_column, purge_days=purge_days: generate_batch_purge_sql(
+                table, date_column, purge_days, batch_size=1000),
+        )
+
+    def send_purge_report(**kwargs):
+        """
+        Generates and sends an HTML summary email report for the purge tasks.
+        """
+        html_template = """
+        <html>
+            <h2>Purge Job Summary Report</h2>
+            <table border="1" cellpadding="5">
+                <tr>
+                    <th>Table Name</th>
+                    <th>Type</th>
+                    <th>Records Deleted</th>
+                    <th>Status</th>
+                </tr>
+                {rows}
+            </table>
+        </html>
+        """
+
+        rows = ""
+        for config in purge_config:
+            table_name = config['table_name']
+            task_id = f"purge_{table_name}_batch"
+            purge_type = config['type']
+            try:
+                records_deleted = kwargs['ti'].xcom_pull(task_ids=task_id)
+                status = "Success"
+            except Exception as e:
+                records_deleted = "N/A"
+                status = f"Failed: {str(e)}"
+                logging.error(f"Error purging {table_name}: {e}")
+
+            rows += f"""
+                <tr>
+                    <td>{table_name}</td>
+                    <td>{purge_type.capitalize()}</td>
+                    <td>{records_deleted}</td>
+                    <td>{status}</td>
+                </tr>
+            """
+
+        email_content = html_template.format(rows=rows)
+
+        email = EmailOperator(
+            task_id='send_email_report',
+            to=email_recipient,
+            subject='DB2 Purge Job Report',
+            html_content=email_content
+        )
+        email.execute(context=kwargs)
+
+    # Task to send the report email after purging is complete
+    send_email = PythonOperator(
+        task_id='send_purge_report',
+        python_callable=send_purge_report,
+        provide_context=True,
+    )
+
+    # Task dependencies
+    list(purge_tasks.values()) >> send_email
+
+
+
+
+[
+    {"table_name": "main_table1", "date_column": "created_date", "purge_days": 390, "type": "main"},
+    {"table_name": "main_table2", "date_column": "event_date", "purge_days": 390, "type": "main"},
+    {"table_name": "staging_table1", "date_column": "staging_created", "purge_days": 90, "type": "staging"},
+    {"table_name": "staging_table2", "date_column": "staging_event_date", "purge_days": 90, "type": "staging"}
+]

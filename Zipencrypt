@@ -1,0 +1,130 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Encoders;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.functions;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
+import java.sql.Blob;
+import java.sql.SQLException;
+
+public class BlobColumnProcessor {
+
+    private SecretKey secretKey;
+
+    public BlobColumnProcessor() throws Exception {
+        // Initialize encryption key
+        KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+        keyGen.init(128);
+        this.secretKey = keyGen.generateKey();
+    }
+
+    public Dataset<Row> zipAndEncryptBlobColumn(Dataset<Row> dataset, String blobColumnName) {
+        return dataset.map(row -> {
+            Blob blob = row.getAs(blobColumnName);
+            try {
+                byte[] blobBytes = blob.getBytes(1, (int) blob.length());
+
+                // Compress
+                byte[] compressedData = compress(blobBytes);
+
+                // Encrypt
+                byte[] encryptedData = encrypt(compressedData);
+
+                // Convert to Blob
+                Blob encryptedBlob = new javax.sql.rowset.serial.SerialBlob(encryptedData);
+
+                // Update row
+                Row updatedRow = RowFactory.create(updateBlobInRow(row, blobColumnName, encryptedBlob));
+                return updatedRow;
+
+            } catch (Exception e) {
+                throw new RuntimeException("Error processing blob column", e);
+            }
+        }, Encoders.row(getUpdatedSchema(dataset.schema(), blobColumnName)));
+    }
+
+    public Row decryptAndUnzipBlobColumn(Row row, String blobColumnName) {
+        try {
+            Blob blob = row.getAs(blobColumnName);
+            byte[] blobBytes = blob.getBytes(1, (int) blob.length());
+
+            // Decrypt
+            byte[] decryptedData = decrypt(blobBytes);
+
+            // Decompress
+            byte[] decompressedData = decompress(decryptedData);
+
+            // Convert to Blob
+            Blob originalBlob = new javax.sql.rowset.serial.SerialBlob(decompressedData);
+
+            // Update row
+            return RowFactory.create(updateBlobInRow(row, blobColumnName, originalBlob));
+
+        } catch (Exception e) {
+            throw new RuntimeException("Error processing blob column", e);
+        }
+    }
+
+    // Helper method to compress data
+    private byte[] compress(byte[] data) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        GZIPOutputStream gzip = new GZIPOutputStream(bos);
+        gzip.write(data);
+        gzip.close();
+        return bos.toByteArray();
+    }
+
+    // Helper method to decompress data
+    private byte[] decompress(byte[] data) throws Exception {
+        InputStream is = new GZIPInputStream(new ByteArrayInputStream(data));
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        int len;
+        while ((len = is.read(buffer)) > 0) {
+            bos.write(buffer, 0, len);
+        }
+        return bos.toByteArray();
+    }
+
+    // Helper method to encrypt data
+    private byte[] encrypt(byte[] data) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+        return cipher.doFinal(data);
+    }
+
+    // Helper method to decrypt data
+    private byte[] decrypt(byte[] data) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.DECRYPT_MODE, secretKey);
+        return cipher.doFinal(data);
+    }
+
+    // Helper method to get the updated schema for dataset transformation
+    private StructType getUpdatedSchema(StructType schema, String blobColumnName) {
+        return schema;
+    }
+
+    // Helper method to update Blob in a Row
+    private Row updateBlobInRow(Row row, String columnName, Blob newBlob) {
+        Object[] updatedValues = new Object[row.size()];
+        for (int i = 0; i < row.size(); i++) {
+            if (row.schema().fieldNames()[i].equals(columnName)) {
+                updatedValues[i] = newBlob;
+            } else {
+                updatedValues[i] = row.get(i);
+            }
+        }
+        return RowFactory.create(updatedValues);
+    }
+}

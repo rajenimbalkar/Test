@@ -1,0 +1,110 @@
+from airflow import DAG
+from airflow.providers.jdbc.operators.jdbc import JdbcOperator
+from airflow.operators.python import PythonOperator
+from airflow.providers.email.operators.email import EmailOperator
+from airflow.utils.dates import days_ago
+from airflow.models import Variable
+import logging
+
+# Define default_args for the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 1,
+}
+
+# Define DAG
+with DAG(
+    'db2_optimized_purge_job_dag',
+    default_args=default_args,
+    description='Optimized purge of old records from DB2 tables',
+    schedule_interval='@daily',
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    # Airflow Variables for purge configurations
+    main_table_purge_days = int(Variable.get("main_table_purge_days", default_var=390))  # Default 13 months
+    staging_table_purge_days = int(Variable.get("staging_table_purge_days", default_var=90))  # Default 90 days
+
+    # Date columns for main and staging tables
+    main_table_date_column = Variable.get("main_table_date_column", default_var="created_at")
+    staging_table_date_column = Variable.get("staging_table_date_column", default_var="staging_created_at")
+
+    # Email recipient configuration
+    email_recipient = Variable.get("email_recipient", default_var="admin@example.com")
+
+    def generate_batch_purge_sql(table_name, date_column, purge_days, batch_size):
+        """
+        Generates the SQL for purging records in batches based on the date column and purge days.
+        """
+        sql = f"""
+            DELETE FROM {table_name}
+            WHERE {date_column} <= CURRENT DATE - {purge_days} DAYS
+            FETCH FIRST {batch_size} ROWS ONLY;
+        """
+        return sql
+
+    # Task to purge data from the main table in batches
+    purge_main_table = JdbcOperator(
+        task_id='purge_main_table_batch',
+        jdbc_conn_id='db2_default',
+        sql=lambda: generate_batch_purge_sql('main_table', main_table_date_column, main_table_purge_days, batch_size=1000),
+    )
+
+    # Task to purge data from the staging table in batches
+    purge_staging_table = JdbcOperator(
+        task_id='purge_staging_table_batch',
+        jdbc_conn_id='db2_default',
+        sql=lambda: generate_batch_purge_sql('staging_table', staging_table_date_column, staging_table_purge_days, batch_size=1000),
+    )
+
+    # Task to send email notification in case of success or failure
+    def send_purge_report(**kwargs):
+        """
+        Sends a report email after the purge process completes.
+        """
+        success_message = """
+        Optimized Purge job completed successfully!
+        - Records deleted from main_table (batch): {main_table_records_deleted}
+        - Records deleted from staging_table (batch): {staging_table_records_deleted}
+        """
+
+        failure_message = """
+        Purge job failed!
+        - Error: {error_message}
+        """
+
+        try:
+            # Assuming the number of records deleted is logged or available from the task
+            main_table_records_deleted = kwargs.get('ti').xcom_pull(task_ids='purge_main_table_batch')
+            staging_table_records_deleted = kwargs.get('ti').xcom_pull(task_ids='purge_staging_table_batch')
+
+            message = success_message.format(
+                main_table_records_deleted=main_table_records_deleted,
+                staging_table_records_deleted=staging_table_records_deleted
+            )
+        except Exception as e:
+            logging.error(f"Error while sending success report: {str(e)}")
+            message = failure_message.format(error_message=str(e))
+
+        # Send the email
+        email = EmailOperator(
+            task_id='send_email_report',
+            to=email_recipient,
+            subject='Optimized Purge Job Report',
+            html_content=message
+        )
+        email.execute(context=kwargs)
+
+    # PythonOperator to send the email after tasks complete
+    send_email = PythonOperator(
+        task_id='send_purge_report',
+        python_callable=send_purge_report,
+        provide_context=True,
+    )
+
+    # Task dependencies
+    [purge_main_table, purge_staging_table] >> send_email

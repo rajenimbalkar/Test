@@ -1,11 +1,11 @@
 from airflow import DAG
-from airflow.providers.jdbc.operators.jdbc import JdbcOperator
+from airflow.hooks.jdbc_hook import JdbcHook
 from airflow.operators.python import PythonOperator
 from airflow.providers.email.operators.email import EmailOperator
 from airflow.models import Variable
 from airflow.utils.dates import days_ago
-import logging
 import json
+import logging
 
 # DAG default arguments
 default_args = {
@@ -18,50 +18,68 @@ default_args = {
 
 # Define DAG
 with DAG(
-    'db2_purge_job_dag',
+    'db2_purge_job_dag_with_jdbchook',
     default_args=default_args,
-    description='Purge old records from DB2 tables with optimized batch processing',
+    description='Purge old records from DB2 tables using JdbcHook and optimized batch processing',
     schedule_interval='@daily',
     start_date=days_ago(1),
     catchup=False,
 ) as dag:
 
+    # Email recipient
     email_recipient = Variable.get("email_recipient", default_var="dl@example.com")
 
     # Load purge configuration from Airflow Variable
     purge_config = json.loads(Variable.get("purge_config"))
 
-    def generate_batch_purge_sql(table_name, date_column, purge_days, batch_size):
+    def batch_purge_with_jdbchook():
         """
-        Generates the SQL for purging records in batches based on the date column and purge days.
+        Perform batch purge using JdbcHook based on purge configuration.
         """
-        return f"""
-            DELETE FROM {table_name}
-            WHERE {date_column} <= CURRENT DATE - {purge_days} DAYS
-            FETCH FIRST {batch_size} ROWS ONLY;
-        """
+        jdbc_hook = JdbcHook(jdbc_conn_id='db2_default')
+        purge_results = []
 
-    # Dictionary to store task instances and results
-    purge_tasks = {}
+        for config in purge_config:
+            table_name = config['table_name']
+            date_column = config['date_column']
+            purge_days = config['purge_days']
+            batch_size = 1000  # Define a batch size
 
-    for config in purge_config:
-        table_name = config['table_name']
-        date_column = config['date_column']
-        purge_days = config['purge_days']
-        
-        # Create a task for each table
-        task_id = f"purge_{table_name}_batch"
-        purge_tasks[task_id] = JdbcOperator(
-            task_id=task_id,
-            jdbc_conn_id='db2_default',
-            sql=lambda table=table_name, date_column=date_column, purge_days=purge_days: generate_batch_purge_sql(
-                table, date_column, purge_days, batch_size=1000),
-        )
+            # Generate SQL for batch delete
+            sql = f"""
+                DELETE FROM {table_name}
+                WHERE {date_column} <= CURRENT DATE - {purge_days} DAYS
+                FETCH FIRST {batch_size} ROWS ONLY;
+            """
+
+            records_deleted = 0
+            total_deleted = 0
+
+            # Execute delete in batches
+            while True:
+                try:
+                    affected_rows = jdbc_hook.run(sql)
+                    records_deleted += affected_rows
+                    total_deleted += affected_rows
+                    if affected_rows < batch_size:
+                        break  # Exit when fewer than batch_size rows are deleted
+
+                except Exception as e:
+                    logging.error(f"Error deleting from {table_name}: {e}")
+                    purge_results.append((table_name, config['type'], "Failed", str(e)))
+                    break
+
+            # Append result to the report
+            purge_results.append((table_name, config['type'], total_deleted, "Success" if records_deleted else "Failed"))
+
+        return purge_results
 
     def send_purge_report(**kwargs):
         """
         Generates and sends an HTML summary email report for the purge tasks.
         """
+        purge_results = kwargs['ti'].xcom_pull(task_ids='batch_purge_task')
+
         html_template = """
         <html>
             <h2>Purge Job Summary Report</h2>
@@ -78,23 +96,13 @@ with DAG(
         """
 
         rows = ""
-        for config in purge_config:
-            table_name = config['table_name']
-            task_id = f"purge_{table_name}_batch"
-            purge_type = config['type']
-            try:
-                records_deleted = kwargs['ti'].xcom_pull(task_ids=task_id)
-                status = "Success"
-            except Exception as e:
-                records_deleted = "N/A"
-                status = f"Failed: {str(e)}"
-                logging.error(f"Error purging {table_name}: {e}")
-
+        for result in purge_results:
+            table_name, purge_type, total_deleted, status = result
             rows += f"""
                 <tr>
                     <td>{table_name}</td>
                     <td>{purge_type.capitalize()}</td>
-                    <td>{records_deleted}</td>
+                    <td>{total_deleted}</td>
                     <td>{status}</td>
                 </tr>
             """
@@ -109,6 +117,13 @@ with DAG(
         )
         email.execute(context=kwargs)
 
+    # Task to execute the batch purge with JdbcHook
+    batch_purge_task = PythonOperator(
+        task_id='batch_purge_task',
+        python_callable=batch_purge_with_jdbchook,
+        provide_context=True,
+    )
+
     # Task to send the report email after purging is complete
     send_email = PythonOperator(
         task_id='send_purge_report',
@@ -117,14 +132,4 @@ with DAG(
     )
 
     # Task dependencies
-    list(purge_tasks.values()) >> send_email
-
-
-
-
-[
-    {"table_name": "main_table1", "date_column": "created_date", "purge_days": 390, "type": "main"},
-    {"table_name": "main_table2", "date_column": "event_date", "purge_days": 390, "type": "main"},
-    {"table_name": "staging_table1", "date_column": "staging_created", "purge_days": 90, "type": "staging"},
-    {"table_name": "staging_table2", "date_column": "staging_event_date", "purge_days": 90, "type": "staging"}
-]
+    batch_purge_task >> send_email

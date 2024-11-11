@@ -1,0 +1,213 @@
+Since the `Encryption` class or secret key is not serializable, a good solution is to use `collectAsList()` to bring the data to the driver and operate on it outside of Spark’s distributed environment. Here’s an example with updated methods for handling encryption and zipping on a `Dataset<Row>`, followed by JUnit tests.
+
+The `BlobColumnProcessor` class will:
+
+1. **Use `collectAsList` to process the dataset**.
+2. **Handle each row individually in a non-distributed manner**.
+3. **Provide JUnit tests**.
+
+### BlobColumnProcessor Class with `collectAsList`
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.StructType;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.sql.rowset.serial.SerialBlob;
+import java.sql.Blob;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.zip.Deflater;
+import java.util.zip.Inflater;
+
+public class BlobColumnProcessor {
+
+    private static final String AES = "AES";
+    private static SecretKey secretKey;
+
+    static {
+        try {
+            KeyGenerator keyGen = KeyGenerator.getInstance(AES);
+            keyGen.init(128);
+            secretKey = keyGen.generateKey();
+        } catch (Exception e) {
+            throw new RuntimeException("Error initializing secret key", e);
+        }
+    }
+
+    public Dataset<Row> zipAndEncryptBlobColumn(Dataset<Row> dataset, String blobColumnName, SparkSession sparkSession) {
+        StructType schema = dataset.schema();
+        
+        List<Row> processedRows = new ArrayList<>();
+
+        for (Row row : dataset.collectAsList()) {
+            Blob blob = row.getAs(blobColumnName);
+            try {
+                // Compress and encrypt the blob data
+                byte[] blobBytes = blob.getBytes(1, (int) blob.length());
+                byte[] compressedData = compress(blobBytes);
+                byte[] encryptedData = encrypt(compressedData);
+
+                // Convert encrypted data to Blob
+                Blob encryptedBlob = new SerialBlob(encryptedData);
+
+                // Create a new Row with updated blob column
+                Object[] updatedRowValues = new Object[row.size()];
+                for (int i = 0; i < row.size(); i++) {
+                    updatedRowValues[i] = schema.fieldNames()[i].equals(blobColumnName) ? encryptedBlob : row.get(i);
+                }
+                processedRows.add(RowFactory.create(updatedRowValues));
+            } catch (Exception e) {
+                throw new RuntimeException("Error processing blob column", e);
+            }
+        }
+
+        return sparkSession.createDataFrame(processedRows, schema);
+    }
+
+    public Dataset<Row> decryptAndUnzipBlobColumn(Dataset<Row> dataset, String blobColumnName, SparkSession sparkSession) {
+        StructType schema = dataset.schema();
+        
+        List<Row> processedRows = new ArrayList<>();
+
+        for (Row row : dataset.collectAsList()) {
+            Blob blob = row.getAs(blobColumnName);
+            try {
+                // Decrypt and decompress the blob data
+                byte[] encryptedData = blob.getBytes(1, (int) blob.length());
+                byte[] compressedData = decrypt(encryptedData);
+                byte[] originalData = decompress(compressedData);
+
+                // Convert back to Blob
+                Blob originalBlob = new SerialBlob(originalData);
+
+                // Create a new Row with updated blob column
+                Object[] updatedRowValues = new Object[row.size()];
+                for (int i = 0; i < row.size(); i++) {
+                    updatedRowValues[i] = schema.fieldNames()[i].equals(blobColumnName) ? originalBlob : row.get(i);
+                }
+                processedRows.add(RowFactory.create(updatedRowValues));
+            } catch (Exception e) {
+                throw new RuntimeException("Error processing blob column", e);
+            }
+        }
+
+        return sparkSession.createDataFrame(processedRows, schema);
+    }
+
+    private byte[] compress(byte[] data) throws Exception {
+        Deflater deflater = new Deflater();
+        deflater.setInput(data);
+        deflater.finish();
+        byte[] compressedData = new byte[data.length];
+        int compressedSize = deflater.deflate(compressedData);
+        return java.util.Arrays.copyOf(compressedData, compressedSize);
+    }
+
+    private byte[] decompress(byte[] data) throws Exception {
+        Inflater inflater = new Inflater();
+        inflater.setInput(data);
+        byte[] decompressedData = new byte[data.length * 2];
+        int decompressedSize = inflater.inflate(decompressedData);
+        return java.util.Arrays.copyOf(decompressedData, decompressedSize);
+    }
+
+    private byte[] encrypt(byte[] data) throws Exception {
+        Cipher cipher = Cipher.getInstance(AES);
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+        return cipher.doFinal(data);
+    }
+
+    private byte[] decrypt(byte[] data) throws Exception {
+        Cipher cipher = Cipher.getInstance(AES);
+        cipher.init(Cipher.DECRYPT_MODE, secretKey);
+        return cipher.doFinal(data);
+    }
+}
+```
+
+### JUnit Tests
+
+To test the `BlobColumnProcessor` class, we'll mock a `Dataset<Row>` with a blob column and verify the `zipAndEncryptBlobColumn` and `decryptAndUnzipBlobColumn` methods.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import javax.sql.rowset.serial.SerialBlob;
+import java.sql.Blob;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
+public class BlobColumnProcessorTest {
+
+    private static SparkSession sparkSession;
+    private static BlobColumnProcessor processor;
+
+    @BeforeAll
+    public static void setUp() {
+        sparkSession = SparkSession.builder()
+                .master("local")
+                .appName("BlobColumnProcessorTest")
+                .getOrCreate();
+        processor = new BlobColumnProcessor();
+    }
+
+    @Test
+    public void testZipAndEncryptBlobColumn() throws Exception {
+        // Prepare a dataset with a blob column
+        byte[] originalData = "This is some test data".getBytes();
+        Blob originalBlob = new SerialBlob(originalData);
+        Row row = RowFactory.create("test1", originalBlob);
+
+        List<Row> data = Arrays.asList(row);
+        Dataset<Row> dataset = sparkSession.createDataFrame(data, row.schema());
+
+        // Process the dataset
+        Dataset<Row> encryptedDataset = processor.zipAndEncryptBlobColumn(dataset, "blobColumnName", sparkSession);
+
+        // Verify that the blob column was modified
+        Blob encryptedBlob = encryptedDataset.collectAsList().get(0).getAs("blobColumnName");
+        assertNotEquals(originalBlob, encryptedBlob);
+    }
+
+    @Test
+    public void testDecryptAndUnzipBlobColumn() throws Exception {
+        // Prepare a dataset with a blob column
+        byte[] originalData = "This is some test data".getBytes();
+        Blob originalBlob = new SerialBlob(originalData);
+        Row row = RowFactory.create("test1", originalBlob);
+
+        List<Row> data = Arrays.asList(row);
+        Dataset<Row> dataset = sparkSession.createDataFrame(data, row.schema());
+
+        // Encrypt and compress the blob column
+        Dataset<Row> encryptedDataset = processor.zipAndEncryptBlobColumn(dataset, "blobColumnName", sparkSession);
+
+        // Decrypt and decompress the blob column
+        Dataset<Row> decryptedDataset = processor.decryptAndUnzipBlobColumn(encryptedDataset, "blobColumnName", sparkSession);
+
+        // Verify that the original data is restored
+        Blob decryptedBlob = decryptedDataset.collectAsList().get(0).getAs("blobColumnName");
+        assertEquals(originalBlob, decryptedBlob);
+    }
+}
+```
+
+### Explanation of Tests
+
+1. **`testZipAndEncryptBlobColumn`**: Verifies that the blob column data changes after applying encryption and compression.
+2. **`testDecryptAndUnzipBlobColumn`**: Verifies that after decrypting and decompressing, the blob data matches the original.
+
+The above implementation should handle encryption and compression in a non-distributed manner while using `collectAsList`.

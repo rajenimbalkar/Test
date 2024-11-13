@@ -1,0 +1,59 @@
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema;
+import org.apache.spark.sql.types.ArrayType;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import scala.collection.mutable.WrappedArray;
+
+import java.util.Arrays;
+import java.util.List;
+
+public class EncryptionProcessor {
+
+    // Encrypt method (simulating encryption)
+    public static String encrypt(String input) {
+        // Replace with actual encryption logic
+        return "encrypted_" + input;
+    }
+
+    // Recursive encryption method that handles nested arrays and rows
+    public static Object encryptFields(Object value, DataType dataType) {
+        List<String> fieldsToEncrypt = Arrays.stream(FieldsToEncrypt.values())
+                                             .map(Enum::name)
+                                             .toList();
+
+        if (value == null) {
+            return null;
+        }
+
+        if (dataType instanceof StructType structType && value instanceof Row row) {
+            Object[] updatedValues = new Object[structType.fields().length];
+            for (int i = 0; i < structType.fields().length; i++) {
+                StructField field = structType.fields()[i];
+                Object fieldValue = row.get(i);
+
+                if (fieldsToEncrypt.contains(field.name()) && fieldValue instanceof String) {
+                    updatedValues[i] = encrypt((String) fieldValue);
+                } else {
+                    updatedValues[i] = encryptFields(fieldValue, field.dataType());
+                }
+            }
+            return new GenericRowWithSchema(updatedValues, structType);
+        } 
+        else if (dataType instanceof ArrayType arrayType && value instanceof WrappedArray<?> array) {
+            return array.map(element -> encryptFields(element, arrayType.elementType()));
+        } 
+        else {
+            return value;
+        }
+    }
+
+    // Main method to process and return updated Dataset
+    public static Dataset<Row> encryptSensitiveFields(Dataset<Row> dataset) {
+        StructType schema = dataset.schema();
+
+        // Process the dataset across worker nodes
+        return dataset.map((Row row) -> (Row) encryptFields(row, schema), Encoders.row(schema));
+    }
+}

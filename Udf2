@@ -1,0 +1,57 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.api.java.UDF2;
+import org.apache.spark.broadcast.Broadcast;
+
+import java.util.List;
+import java.util.Map;
+
+public class FilterDatasetWithUDF2 {
+
+    public static void main(String[] args) {
+        // Initialize Spark session
+        SparkSession spark = SparkSession.builder().appName("Filter Dataset with UDF2").getOrCreate();
+
+        // Example accumulator map (assumed to be populated)
+        Map<String, List<Map<String, Object>>> accumulatorMap = // initialize your accumulator map
+
+        String targetKey = "your_key_string"; // specify the key you want to broadcast
+
+        // Extract only the specific key's value from the accumulator
+        List<Map<String, Object>> targetList = accumulatorMap.get(targetKey);
+
+        // Broadcast only the specific list for the given key
+        Broadcast<List<Map<String, Object>>> broadcastTargetList = 
+            spark.sparkContext().broadcast(targetList, scala.reflect.ClassTag$.MODULE$.apply(List.class));
+
+        // Define the UDF2 to filter based on the broadcasted list
+        UDF2<Object, Object, Boolean> filterUDF = (col1, col2) -> {
+            if (broadcastTargetList.value() == null) return true; // Keep the row if no broadcasted list is available
+
+            // Check if any map in the broadcasted list has matching col1 and col2 values
+            for (Map<String, Object> valueMap : broadcastTargetList.value()) {
+                if (valueMap.get("col1").equals(col1) && valueMap.get("col2").equals(col2)) {
+                    return false; // Remove this row (found in broadcasted list)
+                }
+            }
+            return true; // Keep this row
+        };
+
+        // Register the UDF
+        spark.udf().register("filterUDF", filterUDF, org.apache.spark.sql.types.DataTypes.BooleanType);
+
+        // Assume we have a DataFrame "df" with columns "col1" and "col2"
+        Dataset<Row> df = spark.read().json("path_to_your_data.json");
+
+        // Filter the dataset using the UDF2
+        Dataset<Row> filteredDF = df.filter(functions.callUDF("filterUDF", df.col("col1"), df.col("col2")));
+
+        // Show the filtered dataset
+        filteredDF.show();
+
+        // Stop the Spark session
+        spark.stop();
+    }
+}

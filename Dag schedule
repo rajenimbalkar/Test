@@ -1,0 +1,95 @@
+In Airflow, you can store the schedule values (or any other configuration parameters) in **Airflow Variables** to make the DAG definition more flexible and reusable. You can then retrieve these values in the DAG file and use them as needed.
+
+### **Steps to Store and Use Schedule Values in Airflow Variables**
+
+1. **Store the Schedule in Airflow Variables**:
+   - You can manually set the schedule value (a cron expression, in your case) in Airflow Variables using the Airflow UI, the command line interface (CLI), or directly within the DAG file.
+
+2. **Retrieve the Schedule from Variables**:
+   - You can retrieve the value stored in Airflow Variables within your DAG code and use it as the `schedule_interval`.
+
+### **1. Store the Schedule Value in Airflow Variables**
+
+You can store the schedule value in Airflow Variables using the Airflow UI or via the CLI.
+
+#### **Using Airflow UI**:
+- Go to the Airflow UI.
+- Navigate to **Admin** > **Variables**.
+- Click on **+** to add a new variable.
+- Add a variable with the key `dag_schedule` (or any key you choose) and the value `0 12,4 * * *` (the cron expression for 12 AM and 4 AM MST).
+
+#### **Using Airflow CLI**:
+You can set the variable via the command line:
+
+```bash
+airflow variables set dag_schedule "0 12,4 * * *"
+```
+
+---
+
+### **2. Retrieve the Schedule Value in the DAG File**
+
+Once the schedule value is stored as an Airflow variable, you can retrieve it in your DAG file using `Variable.get()`.
+
+Here’s how to modify the DAG to retrieve the schedule value from the Airflow variable:
+
+#### **DAG Code Example:**
+
+```python
+from airflow import DAG
+from airflow.utils.dates import days_ago
+from airflow.utils.timezone import pendulum
+from airflow.models import Variable
+from datetime import timedelta
+
+# Retrieve the schedule interval from Airflow Variables
+schedule_interval = Variable.get("dag_schedule", default_var="0 12,4 * * *")  # Default to the cron if not set
+
+# Define the timezone as 'America/Denver' (MST/MDT)
+timezone = pendulum.timezone("America/Denver")
+
+# Define the DAG
+dag = DAG(
+    "my_scheduled_dag",
+    description="A DAG to run at 12 AM and 4 AM MST every day",
+    schedule_interval=schedule_interval,  # Use the schedule value from Variables
+    start_date=days_ago(1),  # Start date for the DAG (adjust as needed)
+    catchup=False,
+    timezone=timezone,  # Set timezone for the DAG
+)
+
+# Define a simple task for the DAG
+from airflow.operators.dummy_operator import DummyOperator
+start_task = DummyOperator(
+    task_id="start",
+    dag=dag,
+)
+
+# Add other tasks here if necessary
+```
+
+---
+
+### **Explanation:**
+
+1. **`Variable.get("dag_schedule", default_var="0 12,4 * * *")`**:
+   - This retrieves the value of the `dag_schedule` variable from the Airflow Variables.
+   - If the variable is not set, it defaults to `"0 12,4 * * *"`.
+   
+2. **`schedule_interval=schedule_interval`**:
+   - The `schedule_interval` in the DAG is dynamically set using the value retrieved from the Airflow variable.
+
+3. **Timezone Handling**:
+   - The timezone is set to `America/Denver` to ensure that the schedule operates in MST/MDT, taking care of daylight savings.
+
+---
+
+### **Benefits of Using Airflow Variables for Scheduling:**
+
+- **Flexibility**: By using Airflow Variables, you can change the schedule interval without modifying the DAG code. This is useful for situations where the schedule might change dynamically or for testing purposes.
+- **Centralized Management**: You can manage your scheduling logic in one place (Airflow Variables), making it easier to update across multiple DAGs if needed.
+- **External Configuration**: If you want to control the scheduling from outside the codebase (e.g., via API or Airflow UI), using variables allows that.
+
+---
+
+Let me know if you need help with more advanced variable usage or further details!

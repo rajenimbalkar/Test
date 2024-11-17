@@ -1,16 +1,37 @@
-If `task_1`, `task_2`, and `task_3` are not `SFTPToS3Operator` tasks and represent entirely different operations (e.g., data processing, validation, or triggering external systems), the overall approach remains the same. Here's how to modify the implementation:
+To move `file_configs` into Airflow Variables, you can define the configuration in the Airflow UI or use the Airflow CLI to set it as a JSON object. Here's how you can update the DAG to fetch `file_configs` from Airflow Variables:
 
 ---
 
-### **Modified Code**
+### **Steps to Move `file_configs` into Variables**
+
+1. **Define `file_configs` in Variables:**
+   - In the Airflow UI, go to **Admin > Variables**.
+   - Add a new variable with the key `sftp_file_configs` and a value like:
+
+     ```json
+     [
+       {"file_type": "type1", "sftp_conn_id": "sftp_conn_1", "remote_path": "/outbox/type1/", "s3_bucket": "my-s3-bucket", "s3_key": "type1/"},
+       {"file_type": "type2", "sftp_conn_id": "sftp_conn_2", "remote_path": "/outbox/type2/", "s3_bucket": "my-s3-bucket", "s3_key": "type2/"},
+       {"file_type": "type3", "sftp_conn_id": "sftp_conn_3", "remote_path": "/outbox/type3/", "s3_bucket": "my-s3-bucket", "s3_key": "type3/"}
+     ]
+     ```
+
+   Alternatively, you can use the Airflow CLI:
+   ```bash
+   airflow variables set sftp_file_configs '[{"file_type": "type1", "sftp_conn_id": "sftp_conn_1", "remote_path": "/outbox/type1/", "s3_bucket": "my-s3-bucket", "s3_key": "type1/"}, {"file_type": "type2", "sftp_conn_id": "sftp_conn_2", "remote_path": "/outbox/type2/", "s3_bucket": "my-s3-bucket", "s3_key": "type2/"}, {"file_type": "type3", "sftp_conn_id": "sftp_conn_3", "remote_path": "/outbox/type3/", "s3_bucket": "my-s3-bucket", "s3_key": "type3/"}]'
+   ```
+
+2. **Update the DAG Code:**
 
 ```python
 from airflow import DAG
 from airflow.hooks.base import BaseHook
 from airflow.providers.amazon.aws.transfers.sftp_to_s3 import SFTPToS3Operator
 from airflow.operators.python import PythonOperator
+from airflow.models import Variable
 from airflow.utils.task_group import TaskGroup
 from datetime import datetime, timedelta
+import json
 
 # Default args for the DAG
 default_args = {
@@ -24,20 +45,17 @@ default_args = {
 
 # Define the DAG
 with DAG(
-    dag_id="sftp_to_s3_and_taskgroup",
+    dag_id="sftp_to_s3_and_taskgroup_with_variables",
     default_args=default_args,
-    description="SFTP file transfer followed by a task group with different operations",
+    description="SFTP file transfer followed by a task group, with configs in Variables",
     schedule_interval="@daily",
     start_date=datetime(2024, 1, 1),
     catchup=False,
 ) as dag:
 
-    # Configuration for file types and SFTP connections
-    file_configs = [
-        {"file_type": "type1", "sftp_conn_id": "sftp_conn_1", "remote_path": "/outbox/type1/", "s3_bucket": "my-s3-bucket", "s3_key": "type1/"},
-        {"file_type": "type2", "sftp_conn_id": "sftp_conn_2", "remote_path": "/outbox/type2/", "s3_bucket": "my-s3-bucket", "s3_key": "type2/"},
-        {"file_type": "type3", "sftp_conn_id": "sftp_conn_3", "remote_path": "/outbox/type3/", "s3_bucket": "my-s3-bucket", "s3_key": "type3/"},
-    ]
+    # Fetch file configs from Airflow Variables
+    file_configs = Variable.get("sftp_file_configs", default_var="[]")
+    file_configs = json.loads(file_configs)
 
     def create_sftp_to_s3_task(file_config):
         """
@@ -113,61 +131,26 @@ with DAG(
 
 ### **Key Changes**
 
-1. **Custom Operations in `post_processing`:**
-   - The `post_processing` TaskGroup now uses `PythonOperator` tasks (`task_1`, `task_2`, `task_3`) instead of `SFTPToS3Operator`.
-   - Each task executes a Python function (`perform_task_1`, `perform_task_2`, `perform_task_3`), allowing you to define custom logic.
+1. **Fetching `file_configs` from Variables:**
+   - Used `Variable.get("sftp_file_configs", default_var="[]")` to fetch the JSON string from Airflow Variables.
+   - Parsed the JSON string into a Python list using `json.loads`.
 
-2. **Dynamic Creation of SFTP Tasks:**
-   - The SFTP tasks are still dynamically created and will only execute for valid configurations.
-   - These tasks run first.
+2. **Fallback for Missing Variables:**
+   - If the variable is not defined, it defaults to an empty list (`default_var="[]"`), ensuring the DAG doesn't fail.
 
-3. **Task Dependencies:**
-   - All dynamically created SFTP tasks must complete before the `post_processing` TaskGroup starts.
-
----
-
-### **Behavior**
-
-1. **Step 1: File Transfers**
-   - The dynamically created SFTP tasks (`sftp_to_s3_type1`, `sftp_to_s3_type2`, etc.) transfer files from SFTP to S3.
-
-2. **Step 2: Post-Processing**
-   - Once all SFTP tasks are complete, the `post_processing` TaskGroup begins execution.
-   - Each task in the TaskGroup (`task_1`, `task_2`, `task_3`) performs a separate operation.
+3. **No Hardcoded Configs:**
+   - All configurations (file type, SFTP connection ID, remote path, etc.) are now managed through the Airflow Variables UI or CLI.
 
 ---
 
-### **Custom Python Logic**
-
-Define the logic for your tasks inside the `perform_task_1`, `perform_task_2`, and `perform_task_3` functions. For example:
-
-```python
-def perform_task_1(**kwargs):
-    # Perform some processing logic
-    print("Processing Task 1: Logic goes here")
-
-def perform_task_2(**kwargs):
-    # Perform another operation
-    print("Processing Task 2: Another logic goes here")
-
-def perform_task_3(**kwargs):
-    # Perform a different operation
-    print("Processing Task 3: Additional logic goes here")
-```
+### **Benefits**
+- **Dynamic Configurations:**
+  - Easily modify or add new file configurations without changing the DAG code.
+- **Centralized Management:**
+  - Configuration is managed via Airflow Variables, which is user-friendly and flexible.
+- **Default Handling:**
+  - If no configurations are present, the DAG will skip all SFTP tasks gracefully.
 
 ---
 
-### **Airflow UI Structure**
-
-1. **SFTP Tasks:**
-   - `sftp_to_s3_type1`, `sftp_to_s3_type2`, etc.
-
-2. **Post-Processing TaskGroup:**
-   - Contains tasks:
-     - `task_1_operation`
-     - `task_2_operation`
-     - `task_3_operation`
-
----
-
-Let me know if this aligns with your requirements or if you need further customizations!
+Let me know if you need additional adjustments or further explanation!

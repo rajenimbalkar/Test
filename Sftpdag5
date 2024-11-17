@@ -1,27 +1,8 @@
-To move `file_configs` into Airflow Variables, you can define the configuration in the Airflow UI or use the Airflow CLI to set it as a JSON object. Here's how you can update the DAG to fetch `file_configs` from Airflow Variables:
+To achieve your goal, we can use a `PythonOperator` to handle the logic for multiple file transfers within each SFTP directory. Each PythonOperator will dynamically create and execute the required `SFTPToS3Operator` tasks for all files in its respective SFTP directory. Here's how this can be implemented:
 
 ---
 
-### **Steps to Move `file_configs` into Variables**
-
-1. **Define `file_configs` in Variables:**
-   - In the Airflow UI, go to **Admin > Variables**.
-   - Add a new variable with the key `sftp_file_configs` and a value like:
-
-     ```json
-     [
-       {"file_type": "type1", "sftp_conn_id": "sftp_conn_1", "remote_path": "/outbox/type1/", "s3_bucket": "my-s3-bucket", "s3_key": "type1/"},
-       {"file_type": "type2", "sftp_conn_id": "sftp_conn_2", "remote_path": "/outbox/type2/", "s3_bucket": "my-s3-bucket", "s3_key": "type2/"},
-       {"file_type": "type3", "sftp_conn_id": "sftp_conn_3", "remote_path": "/outbox/type3/", "s3_bucket": "my-s3-bucket", "s3_key": "type3/"}
-     ]
-     ```
-
-   Alternatively, you can use the Airflow CLI:
-   ```bash
-   airflow variables set sftp_file_configs '[{"file_type": "type1", "sftp_conn_id": "sftp_conn_1", "remote_path": "/outbox/type1/", "s3_bucket": "my-s3-bucket", "s3_key": "type1/"}, {"file_type": "type2", "sftp_conn_id": "sftp_conn_2", "remote_path": "/outbox/type2/", "s3_bucket": "my-s3-bucket", "s3_key": "type2/"}, {"file_type": "type3", "sftp_conn_id": "sftp_conn_3", "remote_path": "/outbox/type3/", "s3_bucket": "my-s3-bucket", "s3_key": "type3/"}]'
-   ```
-
-2. **Update the DAG Code:**
+### **Updated Code**
 
 ```python
 from airflow import DAG
@@ -45,9 +26,9 @@ default_args = {
 
 # Define the DAG
 with DAG(
-    dag_id="sftp_to_s3_and_taskgroup_with_variables",
+    dag_id="sftp_to_s3_and_taskgroup_with_python",
     default_args=default_args,
-    description="SFTP file transfer followed by a task group, with configs in Variables",
+    description="SFTP file transfer using PythonOperator for multiple files",
     schedule_interval="@daily",
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -57,39 +38,65 @@ with DAG(
     file_configs = Variable.get("sftp_file_configs", default_var="[]")
     file_configs = json.loads(file_configs)
 
-    def create_sftp_to_s3_task(file_config):
+    def process_sftp_files(file_config, **kwargs):
         """
-        Creates a task to transfer files from SFTP to S3 for the given configuration.
-        Skips task creation if the SFTP connection is not configured.
+        Python function to handle SFTP to S3 transfers for multiple files within a directory.
+        Creates and executes SFTPToS3Operator tasks dynamically for all files in the directory.
         """
+        from airflow.models.taskinstance import TaskInstance
+        from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+        from airflow.providers.sftp.hooks.sftp import SFTPHook
+        
+        # Access connection information
         sftp_conn_id = file_config["sftp_conn_id"]
+        remote_path = file_config["remote_path"]
+        s3_bucket = file_config["s3_bucket"]
+        s3_key = file_config["s3_key"]
+
         try:
-            # Check if the connection exists
-            connection = BaseHook.get_connection(sftp_conn_id)
-            if not connection:
-                raise ValueError(f"No connection found for ID: {sftp_conn_id}")
+            # Initialize SFTP and S3 hooks
+            sftp_hook = SFTPHook(ftp_conn_id=sftp_conn_id)
+            s3_hook = S3Hook(aws_conn_id="aws_default")
+            
+            # List files in the SFTP directory
+            files = sftp_hook.list_directory(remote_path)
+            if not files:
+                print(f"No files found in SFTP directory: {remote_path}")
+                return
+
+            # Process each file
+            for file_name in files:
+                # Construct S3 key for the file
+                s3_file_key = f"{s3_key}{file_name}"
+
+                # Define the SFTP to S3 transfer task dynamically
+                transfer_task = SFTPToS3Operator(
+                    task_id=f"sftp_to_s3_{file_config['file_type']}_{file_name}",
+                    sftp_conn_id=sftp_conn_id,
+                    sftp_path=f"{remote_path}/{file_name}",
+                    s3_bucket_name=s3_bucket,
+                    s3_key=s3_file_key,
+                    replace=True,
+                )
+                
+                # Execute the task immediately
+                ti = TaskInstance(task=transfer_task, execution_date=kwargs["execution_date"])
+                ti.run()
+                
+                print(f"Transferred file '{file_name}' from SFTP to S3 bucket '{s3_bucket}' with key '{s3_file_key}'.")
+
         except Exception as e:
-            # Log and skip task creation if connection is missing
-            print(f"Skipping task for {file_config['file_type']} due to missing connection: {str(e)}")
-            return None
+            print(f"Error processing SFTP files for {file_config['file_type']}: {str(e)}")
 
-        # Define the SFTP to S3 task
-        return SFTPToS3Operator(
-            task_id=f"sftp_to_s3_{file_config['file_type']}",
-            sftp_conn_id=file_config["sftp_conn_id"],
-            sftp_path=file_config["remote_path"],
-            s3_bucket_name=file_config["s3_bucket"],
-            s3_key=file_config["s3_key"] + "{{ ds }}/",
-            replace=True,
-            dag=dag,
-        )
-
-    # Step 1: Create SFTP tasks dynamically
+    # Step 1: Create Python tasks dynamically
     sftp_tasks = []
     for file_config in file_configs:
-        task = create_sftp_to_s3_task(file_config)
-        if task:
-            sftp_tasks.append(task)
+        task = PythonOperator(
+            task_id=f"process_sftp_files_{file_config['file_type']}",
+            python_callable=process_sftp_files,
+            op_kwargs={"file_config": file_config},
+        )
+        sftp_tasks.append(task)
 
     # Step 2: Define a TaskGroup with different operations
     def perform_task_1(**kwargs):
@@ -131,26 +138,32 @@ with DAG(
 
 ### **Key Changes**
 
-1. **Fetching `file_configs` from Variables:**
-   - Used `Variable.get("sftp_file_configs", default_var="[]")` to fetch the JSON string from Airflow Variables.
-   - Parsed the JSON string into a Python list using `json.loads`.
+1. **Using `PythonOperator` for SFTP Logic:**
+   - Each `PythonOperator` processes all files in the respective SFTP directory.
+   - Inside the Python function, the logic for listing files, transferring them to S3, and dynamically executing `SFTPToS3Operator` tasks is implemented.
 
-2. **Fallback for Missing Variables:**
-   - If the variable is not defined, it defaults to an empty list (`default_var="[]"`), ensuring the DAG doesn't fail.
+2. **Dynamic Execution of `SFTPToS3Operator`:**
+   - Each file in the SFTP directory results in the immediate execution of a dynamically created `SFTPToS3Operator` task.
 
-3. **No Hardcoded Configs:**
-   - All configurations (file type, SFTP connection ID, remote path, etc.) are now managed through the Airflow Variables UI or CLI.
+3. **File Processing with Hooks:**
+   - Used `SFTPHook` to list files in the directory.
+   - Used `S3Hook` to interact with the S3 bucket (for potential validations or uploads).
+
+4. **Fallback for Empty Directories:**
+   - If no files are found in the SFTP directory, the function logs a message and skips further operations.
+
+5. **Custom TaskGroup Logic:**
+   - Post-SFTP tasks (`task_1`, `task_2`, `task_3`) remain as part of the `post_processing` TaskGroup and execute after all SFTP file transfers are completed.
 
 ---
 
 ### **Benefits**
-- **Dynamic Configurations:**
-  - Easily modify or add new file configurations without changing the DAG code.
-- **Centralized Management:**
-  - Configuration is managed via Airflow Variables, which is user-friendly and flexible.
-- **Default Handling:**
-  - If no configurations are present, the DAG will skip all SFTP tasks gracefully.
+
+- **Handles Multiple Files:** Each PythonOperator processes multiple files dynamically for its respective SFTP directory.
+- **Dynamic Task Creation:** Creates `SFTPToS3Operator` tasks for each file and executes them dynamically within the PythonOperator.
+- **Flexible Configurations:** Uses Airflow Variables for easy management of file configurations.
+- **Graceful Handling:** Skips directories with no files or invalid connections, ensuring the DAG runs smoothly without manual intervention.
 
 ---
 
-Let me know if you need additional adjustments or further explanation!
+Let me know if you need further assistance or modifications!

@@ -1,0 +1,37 @@
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class GroupRecordsExample {
+    public static void main(String[] args) {
+        // Example input data
+        List<Map<String, String>> records = List.of(
+                Map.of("key1", "A", "key2", "1", "key3", "X", "key4", "P", "extra", "E1"),
+                Map.of("key1", "B", "key2", "2", "key3", "Y", "key4", "Q", "extra", "E2"),
+                Map.of("key1", "A", "key2", "1", "key3", "X", "key4", "P", "extra", "E3"),
+                Map.of("key1", "C", "key2", "3", "key3", "Z", "key4", "R", "extra", "E4"),
+                Map.of("key1", "A", "key2", "1", "key3", "X", "key4", "P", "extra", "E5")
+        );
+
+        // Group records based on the combination of keys
+        Map<List<String>, List<Map<String, String>>> groupedRecords =
+                groupByUniqueKeys(records, List.of("key1", "key2", "key3", "key4"));
+
+        // Output the grouped records
+        groupedRecords.forEach((keyCombination, recordList) -> {
+            System.out.println("Key Combination: " + keyCombination);
+            recordList.forEach(System.out::println);
+        });
+    }
+
+    public static Map<List<String>, List<Map<String, String>>> groupByUniqueKeys(
+            List<Map<String, String>> records, List<String> keys) {
+
+        // Group the records by extracting the key combination
+        return records.stream()
+                .collect(Collectors.groupingBy(record -> 
+                    keys.stream()
+                        .map(record::get)
+                        .collect(Collectors.toList())
+                ));
+    }
+}

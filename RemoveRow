@@ -1,0 +1,71 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import static org.apache.spark.sql.functions.*;
+
+import java.util.*;
+
+public class DatasetRowFilter {
+    public static void main(String[] args) {
+        // Initialize Spark session
+        SparkSession spark = SparkSession.builder()
+                .appName("Dataset Row Filter")
+                .master("local[1]")
+                .getOrCreate();
+
+        // Sample input dataset (Dataset<Row>) - your dataset may be large
+        Dataset<Row> data = spark.createDataFrame(
+                Arrays.asList(
+                        new RowData("A123", 1, "X", "Some Info 1"),
+                        new RowData("B456", 2, "Y", "Some Info 2"),
+                        new RowData("A123", null, "Z", "Some Info 3"),
+                        new RowData("C789", 3, "W", "Some Info 4"),
+                        new RowData("D012", 4, "V", "Some Info 5")
+                ), RowData.class
+        ).toDF("accountNumber", "sequenceNumber", "otherField", "additionalField");
+
+        // Show the original data
+        System.out.println("Original Data:");
+        data.show();
+
+        // Sample list of maps with accountNumber and sequenceNumber
+        List<Map<String, Object>> mapList = new ArrayList<>();
+        mapList.add(createMap("A123", 1));
+        mapList.add(createMap("B456", 2));
+
+        // Step 1: Extract accountNumbers and sequenceNumbers from the list of maps
+        Set<Map.Entry<String, Integer>> accountSequencePairs = new HashSet<>();
+        for (Map<String, Object> map : mapList) {
+            String accountNumber = (String) map.get("accountNumber");
+            Integer sequenceNumber = (Integer) map.get("sequenceNumber");
+            accountSequencePairs.add(new AbstractMap.SimpleEntry<>(accountNumber, sequenceNumber));
+        }
+
+        // Step 2: Filter the Dataset<Row> based on accountNumber and sequenceNumber
+        Dataset<Row> filteredData = data.filter(
+                row -> {
+                    String accountNumber = row.getAs("accountNumber");
+                    Integer sequenceNumber = row.getAs("sequenceNumber");
+
+                    // Check if the accountNumber and sequenceNumber pair exists in the set
+                    return accountSequencePairs.stream()
+                            .noneMatch(entry -> entry.getKey().equals(accountNumber) && entry.getValue().equals(sequenceNumber));
+                }
+        );
+
+        // Show the filtered data
+        System.out.println("Filtered Data:");
+        filteredData.show();
+
+        // Stop the Spark session
+        spark.stop();
+    }
+
+    // Helper method to create a map with accountNumber and sequenceNumber
+    private static Map<String, Object> createMap(String accountNumber, Integer sequenceNumber) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("accountNumber", accountNumber);
+        map.put("sequenceNumber", sequenceNumber);
+        return map;
+    }
+}

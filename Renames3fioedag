@@ -1,0 +1,92 @@
+from airflow import DAG
+from airflow.providers.sftp.transfers import SFTPTOS3Operator
+from airflow.providers.s3.hooks.s3 import S3Hook
+from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+import os
+
+def rename_file_in_s3(s3_bucket, s3_key_with_gz, s3_key_without_gz):
+    # Use the S3Hook to interact with the S3 bucket
+    s3_hook = S3Hook(aws_conn_id='aws_default')
+    
+    # Check if the file exists
+    if s3_hook.check_for_key(s3_key_with_gz, bucket_name=s3_bucket):
+        # Copy the file to the new key without .gz
+        s3_hook.copy_object(
+            bucket_name=s3_bucket,
+            copy_source={'Bucket': s3_bucket, 'Key': s3_key_with_gz},
+            key=s3_key_without_gz
+        )
+        
+        # Delete the original file with .gz extension
+        s3_hook.delete_objects(bucket_name=s3_bucket, keys=[s3_key_with_gz])
+
+def copy_and_rename_files(sftp_conn_id, sftp_directory, s3_bucket, s3_key_prefix, file_list):
+    # After copying the files to S3, rename them to remove .gz extension if present
+    for file in file_list:
+        s3_key_with_gz = f"{s3_key_prefix}/{file}"
+        s3_key_without_gz = s3_key_with_gz.replace('.gz', '')
+
+        # Rename the file by removing the .gz extension in S3
+        rename_file_in_s3(s3_bucket, s3_key_with_gz, s3_key_without_gz)
+
+def filter_and_rename_files(sftp_conn_id, sftp_directory):
+    # Connect to SFTP using SFTPHook
+    sftp_hook = SFTPHook(ssh_conn_id=sftp_conn_id)
+    
+    # List files in the SFTP directory
+    file_list = sftp_hook.list_directory(sftp_directory)
+    
+    # Filter files (you can modify the filter logic based on your needs)
+    files_to_copy = [file for file in file_list if not file.endswith('.zp')]  # Example filter
+    
+    return files_to_copy
+
+def copy_files_to_s3(files_to_copy, sftp_conn_id, sftp_directory, s3_bucket, s3_key_prefix):
+    for file in files_to_copy:
+        s3_key = f"{s3_key_prefix}/{file}"
+        
+        # Use the SFTPTOS3Operator to copy the file from SFTP to S3
+        SFTPTOS3Operator(
+            task_id=f"copy_{file}_to_s3",
+            sftp_conn_id=sftp_conn_id,
+            local_file=os.path.join(sftp_directory, file),
+            bucket_name=s3_bucket,
+            s3_key=s3_key,
+        ).execute(context={})
+        
+    # After all files are copied, rename files to remove .gz extension if present
+    copy_and_rename_files(sftp_conn_id, sftp_directory, s3_bucket, s3_key_prefix, files_to_copy)
+
+# Define the DAG
+dag = DAG(
+    'sftp_to_s3_with_file_rename',
+    schedule_interval=None,  # You can set the schedule for this DAG
+    start_date=days_ago(1),
+    catchup=False,
+)
+
+# Use a PythonOperator to filter and rename files
+filter_files_task = PythonOperator(
+    task_id='filter_files_task',
+    python_callable=filter_and_rename_files,
+    op_args=['sftp_connection_id', '/path/to/sftp/directory'],  # Your SFTP connection ID and directory
+    dag=dag,
+)
+
+# Once files are filtered, copy them to S3
+copy_to_s3_task = PythonOperator(
+    task_id='copy_files_to_s3',
+    python_callable=copy_files_to_s3,
+    op_args=[
+        "{{ task_instance.xcom_pull(task_ids='filter_files_task') }}",  # Get filtered files
+        'sftp_connection_id',  # SFTP connection ID
+        '/path/to/sftp/directory',  # SFTP directory
+        'your-s3-bucket',  # S3 Bucket Name
+        'your-s3-prefix',  # S3 Key Prefix
+    ],
+    provide_context=True,
+    dag=dag,
+)
+
+filter_files_task >> copy_to_s3_task  # Set task dependencies

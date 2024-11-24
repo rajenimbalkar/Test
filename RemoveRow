@@ -1,71 +1,41 @@
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SparkSession;
-import static org.apache.spark.sql.functions.*;
-
 import java.util.*;
+import java.util.stream.Collectors;
 
-public class DatasetRowFilter {
+public class FlattenMapList {
+
     public static void main(String[] args) {
-        // Initialize Spark session
-        SparkSession spark = SparkSession.builder()
-                .appName("Dataset Row Filter")
-                .master("local[1]")
-                .getOrCreate();
+        // Sample Map with List of Maps as values
+        Map<String, List<Map<String, Object>>> mapOfLists = new HashMap<>();
 
-        // Sample input dataset (Dataset<Row>) - your dataset may be large
-        Dataset<Row> data = spark.createDataFrame(
-                Arrays.asList(
-                        new RowData("A123", 1, "X", "Some Info 1"),
-                        new RowData("B456", 2, "Y", "Some Info 2"),
-                        new RowData("A123", null, "Z", "Some Info 3"),
-                        new RowData("C789", 3, "W", "Some Info 4"),
-                        new RowData("D012", 4, "V", "Some Info 5")
-                ), RowData.class
-        ).toDF("accountNumber", "sequenceNumber", "otherField", "additionalField");
-
-        // Show the original data
-        System.out.println("Original Data:");
-        data.show();
-
-        // Sample list of maps with accountNumber and sequenceNumber
-        List<Map<String, Object>> mapList = new ArrayList<>();
-        mapList.add(createMap("A123", 1));
-        mapList.add(createMap("B456", 2));
-
-        // Step 1: Extract accountNumbers and sequenceNumbers from the list of maps
-        Set<Map.Entry<String, Integer>> accountSequencePairs = new HashSet<>();
-        for (Map<String, Object> map : mapList) {
-            String accountNumber = (String) map.get("accountNumber");
-            Integer sequenceNumber = (Integer) map.get("sequenceNumber");
-            accountSequencePairs.add(new AbstractMap.SimpleEntry<>(accountNumber, sequenceNumber));
-        }
-
-        // Step 2: Filter the Dataset<Row> based on accountNumber and sequenceNumber
-        Dataset<Row> filteredData = data.filter(
-                row -> {
-                    String accountNumber = row.getAs("accountNumber");
-                    Integer sequenceNumber = row.getAs("sequenceNumber");
-
-                    // Check if the accountNumber and sequenceNumber pair exists in the set
-                    return accountSequencePairs.stream()
-                            .noneMatch(entry -> entry.getKey().equals(accountNumber) && entry.getValue().equals(sequenceNumber));
-                }
+        // Sample data
+        List<Map<String, Object>> list1 = Arrays.asList(
+                createMap("accountNumber", "A123", "sequenceNumber", 1),
+                createMap("accountNumber", "A124", "sequenceNumber", 2)
         );
 
-        // Show the filtered data
-        System.out.println("Filtered Data:");
-        filteredData.show();
+        List<Map<String, Object>> list2 = Arrays.asList(
+                createMap("accountNumber", "B123", "sequenceNumber", 1),
+                createMap("accountNumber", "B124", "sequenceNumber", 2)
+        );
 
-        // Stop the Spark session
-        spark.stop();
+        mapOfLists.put("key1", list1);
+        mapOfLists.put("key2", list2);
+
+        // Step 1: Flatten the map into a single list of maps using streams
+        List<Map<String, Object>> flattenedList = mapOfLists.values().stream()
+                .flatMap(Collection::stream)  // Flatten each list of maps into a single stream
+                .collect(Collectors.toList());  // Collect them into a single list
+
+        // Step 2: Print the flattened list
+        System.out.println("Flattened List:");
+        flattenedList.forEach(map -> System.out.println(map));
     }
 
     // Helper method to create a map with accountNumber and sequenceNumber
-    private static Map<String, Object> createMap(String accountNumber, Integer sequenceNumber) {
+    private static Map<String, Object> createMap(String key1, Object value1, String key2, Object value2) {
         Map<String, Object> map = new HashMap<>();
-        map.put("accountNumber", accountNumber);
-        map.put("sequenceNumber", sequenceNumber);
+        map.put(key1, value1);
+        map.put(key2, value2);
         return map;
     }
 }

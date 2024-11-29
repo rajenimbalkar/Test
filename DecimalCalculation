@@ -1,0 +1,53 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.types.DataTypes;
+
+import java.math.BigDecimal;
+import java.util.Currency;
+
+public class DistributedDatasetProcessor {
+
+    public static Dataset<Row> processAmountsDistributed(Dataset<Row> dataset) {
+        // Define UDF to calculate updated amount based on currency code
+        org.apache.spark.sql.expressions.UserDefinedFunction updateAmountUDF = functions.udf(
+            (String currencyCode, BigDecimal amount) -> {
+                if (currencyCode == null || amount == null) {
+                    return amount; // Return as-is if currency or amount is missing
+                }
+                int decimalPlaces = getDecimalPlaces(currencyCode);
+                return amount.setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
+            },
+            DataTypes.createDecimalType(38, 10) // Adjust scale/precision as needed
+        );
+
+        // Identify fields to process (from Enum or predefined list)
+        String[] amountFields = getAmountFields();
+
+        // Apply UDF to each amount field
+        for (String field : amountFields) {
+            if (dataset.schema().fieldNames().contains(field)) {
+                dataset = dataset.withColumn(
+                    field, updateAmountUDF.apply(functions.col("currencyCode"), functions.col(field))
+                );
+            }
+        }
+
+        return dataset;
+    }
+
+    private static int getDecimalPlaces(String currencyCode) {
+        try {
+            Currency currency = Currency.getInstance(currencyCode);
+            return currency.getDefaultFractionDigits();
+        } catch (IllegalArgumentException e) {
+            // Default to 2 decimal places if currency code is invalid
+            return 2;
+        }
+    }
+
+    private static String[] getAmountFields() {
+        // Example: Get fields from Enum or hardcode them
+        return new String[]{"TOTAL_AMOUNT", "TAX_AMOUNT", "DISCOUNT_AMOUNT"};
+    }
+}

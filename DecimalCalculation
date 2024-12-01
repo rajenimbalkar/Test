@@ -50,14 +50,11 @@ public class DistributedDatasetProcessor {
     }
 
     private static Column transformDoubleField(Column column, int precision, int scale, Column currencyCodeColumn) {
+        // Use a Spark SQL UDF to fetch the decimal places dynamically from java.util.Currency
+        Column fractionDigits = getCurrencyFractionDigitsUDF().apply(currencyCodeColumn);
+
         return functions.expr(
-            "CASE " +
-                "WHEN " + currencyCodeColumn + " IS NULL THEN CAST(round(" + column + ", " + scale + ") AS DECIMAL(" + precision + ", " + scale + ")) " +
-                "ELSE CAST(round(" + column + ", CASE " +
-                    "WHEN " + currencyCodeColumn + " = 'USD' THEN 2 " + // Example: USD has 2 decimal places
-                    "WHEN " + currencyCodeColumn + " = 'JPY' THEN 0 " + // Example: JPY has no decimal places
-                    "ELSE " + scale + " END) AS DECIMAL(" + precision + ", " + scale + ")) " +
-            "END"
+            "CAST(round(" + column + ", " + fractionDigits + ") AS DECIMAL(" + precision + ", " + scale + "))"
         );
     }
 
@@ -97,5 +94,23 @@ public class DistributedDatasetProcessor {
         }
 
         return column; // Return as-is for other types
+    }
+
+    private static org.apache.spark.sql.expressions.UserDefinedFunction getCurrencyFractionDigitsUDF() {
+        return functions.udf(
+            (String currencyCode) -> {
+                if (currencyCode == null || currencyCode.isEmpty()) {
+                    return 2; // Default to 2 decimal places if currency code is null or invalid
+                }
+                try {
+                    Currency currency = Currency.getInstance(currencyCode);
+                    return currency.getDefaultFractionDigits();
+                } catch (IllegalArgumentException e) {
+                    // Handle cases where the currency code is invalid
+                    return 2; // Default to 2 decimal places for unknown currencies
+                }
+            },
+            DataTypes.IntegerType
+        );
     }
 }

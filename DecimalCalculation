@@ -1,38 +1,47 @@
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Column;
 import org.apache.spark.sql.functions;
-import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.*;
 
-import java.math.BigDecimal;
-import java.util.Arrays;
 import java.util.Currency;
-import java.util.EnumSet;
-import java.util.List;
 
 public class DistributedDatasetProcessor {
 
-    public static Dataset<Row> processAmountsDistributed(Dataset<Row> dataset) {
-        // Get the list of amount fields from the enum
-        List<String> amountFields = getAmountFields();
+    public static Dataset<Row> processDataset(
+        Dataset<Row> dataset, int precision, int scale, String currencyCodeField) {
 
-        // Define UDF to calculate updated amount based on currency code
-        org.apache.spark.sql.expressions.UserDefinedFunction updateAmountUDF = functions.udf(
-            (String currencyCode, BigDecimal amount) -> {
-                if (currencyCode == null || amount == null) {
-                    return amount; // Return as-is if currency or amount is missing
-                }
-                int decimalPlaces = getDecimalPlaces(currencyCode);
-                return amount.setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
-            },
-            DataTypes.createDecimalType(38, 10) // Adjust precision and scale as needed
-        );
+        StructType schema = dataset.schema();
+        return transformDataset(dataset, schema, precision, scale, currencyCodeField);
+    }
 
-        // Apply UDF to each field in the dataset
-        for (String field : amountFields) {
-            // Check if the field exists in the dataset schema
-            if (Arrays.asList(dataset.schema().fieldNames()).contains(field)) {
+    private static Dataset<Row> transformDataset(
+        Dataset<Row> dataset, StructType schema, int precision, int scale, String currencyCodeField) {
+
+        // Extract currencyCode from the header field and apply it to the entire row
+        Column extractedCurrencyCode = functions.col("header." + currencyCodeField);
+
+        for (StructField field : schema.fields()) {
+            String fieldName = field.name();
+            DataType fieldType = field.dataType();
+
+            if (fieldType.equals(DataTypes.DoubleType)) {
+                // Transform DoubleType fields
                 dataset = dataset.withColumn(
-                    field, updateAmountUDF.apply(functions.col("currencyCode"), functions.col(field))
+                    fieldName,
+                    transformDoubleField(functions.col(fieldName), precision, scale, extractedCurrencyCode)
+                );
+            } else if (fieldType instanceof StructType) {
+                // Recursively transform StructType fields
+                dataset = dataset.withColumn(
+                    fieldName,
+                    transformNestedStruct(functions.col(fieldName), (StructType) fieldType, precision, scale, extractedCurrencyCode)
+                );
+            } else if (fieldType instanceof ArrayType) {
+                // Transform ArrayType fields
+                dataset = dataset.withColumn(
+                    fieldName,
+                    transformArrayField(functions.col(fieldName), (ArrayType) fieldType, precision, scale, extractedCurrencyCode)
                 );
             }
         }
@@ -40,20 +49,53 @@ public class DistributedDatasetProcessor {
         return dataset;
     }
 
-    private static int getDecimalPlaces(String currencyCode) {
-        try {
-            Currency currency = Currency.getInstance(currencyCode);
-            return currency.getDefaultFractionDigits();
-        } catch (IllegalArgumentException e) {
-            // Default to 2 decimal places if currency code is invalid
-            return 2;
-        }
+    private static Column transformDoubleField(Column column, int precision, int scale, Column currencyCodeColumn) {
+        return functions.expr(
+            "CASE " +
+                "WHEN " + currencyCodeColumn + " IS NULL THEN CAST(round(" + column + ", " + scale + ") AS DECIMAL(" + precision + ", " + scale + ")) " +
+                "ELSE CAST(round(" + column + ", CASE " +
+                    "WHEN " + currencyCodeColumn + " = 'USD' THEN 2 " + // Example: USD has 2 decimal places
+                    "WHEN " + currencyCodeColumn + " = 'JPY' THEN 0 " + // Example: JPY has no decimal places
+                    "ELSE " + scale + " END) AS DECIMAL(" + precision + ", " + scale + ")) " +
+            "END"
+        );
     }
 
-    private static List<String> getAmountFields() {
-        // Get field names from the AmountFields enum
-        return EnumSet.allOf(AmountFields.class).stream()
-            .map(Enum::name)
-            .toList();
+    private static Column transformNestedStruct(
+        Column column, StructType structType, int precision, int scale, Column currencyCodeColumn) {
+
+        Column[] transformedFields = new Column[structType.fields().length];
+
+        for (int i = 0; i < structType.fields().length; i++) {
+            StructField field = structType.fields()[i];
+            String fieldName = field.name();
+            DataType fieldType = field.dataType();
+
+            if (fieldType.equals(DataTypes.DoubleType)) {
+                transformedFields[i] = transformDoubleField(column.getField(fieldName), precision, scale, currencyCodeColumn).alias(fieldName);
+            } else if (fieldType instanceof StructType) {
+                transformedFields[i] = transformNestedStruct(column.getField(fieldName), (StructType) fieldType, precision, scale, currencyCodeColumn).alias(fieldName);
+            } else if (fieldType instanceof ArrayType) {
+                transformedFields[i] = transformArrayField(column.getField(fieldName), (ArrayType) fieldType, precision, scale, currencyCodeColumn).alias(fieldName);
+            } else {
+                transformedFields[i] = column.getField(fieldName);
+            }
+        }
+
+        return functions.struct(transformedFields);
+    }
+
+    private static Column transformArrayField(
+        Column column, ArrayType arrayType, int precision, int scale, Column currencyCodeColumn) {
+
+        DataType elementType = arrayType.elementType();
+
+        if (elementType.equals(DataTypes.DoubleType)) {
+            return functions.transform(column, element -> transformDoubleField(element, precision, scale, currencyCodeColumn));
+        } else if (elementType instanceof StructType) {
+            return functions.transform(column, element -> transformNestedStruct(element, (StructType) elementType, precision, scale, currencyCodeColumn));
+        }
+
+        return column; // Return as-is for other types
     }
 }

@@ -6,47 +6,40 @@ import org.apache.spark.sql.types.*;
 import org.apache.spark.sql.SparkSession;
 
 import java.util.Currency;
+import java.util.EnumSet;
 
-public class DistributedDatasetProcessor {
+public class DatasetFieldProcessor {
 
     public static Dataset<Row> processDataset(
-        SparkSession spark, Dataset<Row> dataset, int precision, int scale, String currencyCodeField) {
+        SparkSession spark,
+        Dataset<Row> dataset,
+        int precision,
+        int scale,
+        String currencyCodeField,
+        Enum<?>[] fieldEnum) {
 
-        // Register the UDF for currency fraction digits
+        // Register the UDF for currency fraction digits if not already done
         registerCurrencyFractionDigitsUDF(spark);
 
         StructType schema = dataset.schema();
-        return transformDataset(dataset, schema, precision, scale, currencyCodeField);
-    }
-
-    private static void registerCurrencyFractionDigitsUDF(SparkSession spark) {
-        // Register the UDF for currency fraction digits in the SparkSession
-        spark.udf().register("currencyFractionDigits", (String currencyCode) -> {
-            if (currencyCode == null || currencyCode.isEmpty()) {
-                return 2; // Default to 2 decimal places if currency code is null or invalid
-            }
-            try {
-                Currency currency = Currency.getInstance(currencyCode);
-                return currency.getDefaultFractionDigits();
-            } catch (IllegalArgumentException e) {
-                // Handle cases where the currency code is invalid
-                return 2; // Default to 2 decimal places for unknown currencies
-            }
-        }, org.apache.spark.sql.types.DataTypes.IntegerType);
-    }
-
-    private static Dataset<Row> transformDataset(
-        Dataset<Row> dataset, StructType schema, int precision, int scale, String currencyCodeField) {
-
-        // Extract currencyCode from the header field and apply it to the entire row
         Column extractedCurrencyCode = functions.col("header." + currencyCodeField);
 
         for (StructField field : schema.fields()) {
             String fieldName = field.name();
             DataType fieldType = field.dataType();
 
-            if (fieldType.equals(DataTypes.DoubleType)) {
-                // Transform DoubleType fields
+            // Check if the field exists in the enum with or without the prefix "F_"
+            String fieldNameWithoutPrefix = fieldName.startsWith("F_") ? fieldName.substring(2) : fieldName;
+            boolean isFieldInEnum = false;
+            for (Enum<?> enumField : fieldEnum) {
+                if (enumField.name().equalsIgnoreCase(fieldNameWithoutPrefix)) {
+                    isFieldInEnum = true;
+                    break;
+                }
+            }
+
+            if (isFieldInEnum && fieldType.equals(DataTypes.DoubleType)) {
+                // Transform DoubleType fields if they match the enum and are of type Double
                 dataset = dataset.withColumn(
                     fieldName,
                     transformDoubleField(functions.col(fieldName), precision, scale, extractedCurrencyCode)
@@ -69,10 +62,26 @@ public class DistributedDatasetProcessor {
         return dataset;
     }
 
+    private static void registerCurrencyFractionDigitsUDF(SparkSession spark) {
+        // Register the UDF to return the number of fraction digits for a given currency code
+        spark.udf().register("currencyFractionDigits", (String currencyCode) -> {
+            if (currencyCode == null || currencyCode.isEmpty()) {
+                return 2; // Default to 2 decimal places if the currency code is invalid
+            }
+            try {
+                Currency currency = Currency.getInstance(currencyCode);
+                return currency.getDefaultFractionDigits();
+            } catch (IllegalArgumentException e) {
+                return 2; // Default to 2 decimal places for unknown currencies
+            }
+        }, org.apache.spark.sql.types.DataTypes.IntegerType);
+    }
+
     private static Column transformDoubleField(Column column, int precision, int scale, Column currencyCodeColumn) {
-        // Use the registered UDF to dynamically determine the fraction digits
+        // Use the UDF to get the number of fraction digits based on the currency code
         Column fractionDigits = functions.callUDF("currencyFractionDigits", currencyCodeColumn);
 
+        // Transform the column to BigDecimal with specified precision and scale
         return functions.expr(
             "CAST(round(" + column + ", " + fractionDigits + ") AS DECIMAL(" + precision + ", " + scale + "))"
         );

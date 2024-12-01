@@ -4,11 +4,17 @@ import org.apache.spark.sql.functions;
 import org.apache.spark.sql.types.DataTypes;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Currency;
+import java.util.EnumSet;
+import java.util.List;
 
 public class DistributedDatasetProcessor {
 
     public static Dataset<Row> processAmountsDistributed(Dataset<Row> dataset) {
+        // Get the list of amount fields from the enum
+        List<String> amountFields = getAmountFields();
+
         // Define UDF to calculate updated amount based on currency code
         org.apache.spark.sql.expressions.UserDefinedFunction updateAmountUDF = functions.udf(
             (String currencyCode, BigDecimal amount) -> {
@@ -18,15 +24,13 @@ public class DistributedDatasetProcessor {
                 int decimalPlaces = getDecimalPlaces(currencyCode);
                 return amount.setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
             },
-            DataTypes.createDecimalType(38, 10) // Adjust scale/precision as needed
+            DataTypes.createDecimalType(38, 10) // Adjust precision and scale as needed
         );
 
-        // Identify fields to process (from Enum or predefined list)
-        String[] amountFields = getAmountFields();
-
-        // Apply UDF to each amount field
+        // Apply UDF to each field in the dataset
         for (String field : amountFields) {
-            if (dataset.schema().fieldNames().contains(field)) {
+            // Check if the field exists in the dataset schema
+            if (Arrays.asList(dataset.schema().fieldNames()).contains(field)) {
                 dataset = dataset.withColumn(
                     field, updateAmountUDF.apply(functions.col("currencyCode"), functions.col(field))
                 );
@@ -46,8 +50,10 @@ public class DistributedDatasetProcessor {
         }
     }
 
-    private static String[] getAmountFields() {
-        // Example: Get fields from Enum or hardcode them
-        return new String[]{"TOTAL_AMOUNT", "TAX_AMOUNT", "DISCOUNT_AMOUNT"};
+    private static List<String> getAmountFields() {
+        // Get field names from the AmountFields enum
+        return EnumSet.allOf(AmountFields.class).stream()
+            .map(Enum::name)
+            .toList();
     }
 }

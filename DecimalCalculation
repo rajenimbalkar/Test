@@ -3,19 +3,36 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.Column;
 import org.apache.spark.sql.functions;
 import org.apache.spark.sql.types.*;
+import org.apache.spark.sql.SparkSession;
 
 import java.util.Currency;
 
 public class DistributedDatasetProcessor {
 
     public static Dataset<Row> processDataset(
-        Dataset<Row> dataset, int precision, int scale, String currencyCodeField) {
+        SparkSession spark, Dataset<Row> dataset, int precision, int scale, String currencyCodeField) {
 
         // Register the UDF for currency fraction digits
-        registerCurrencyFractionDigitsUDF();
+        registerCurrencyFractionDigitsUDF(spark);
 
         StructType schema = dataset.schema();
         return transformDataset(dataset, schema, precision, scale, currencyCodeField);
+    }
+
+    private static void registerCurrencyFractionDigitsUDF(SparkSession spark) {
+        // Register the UDF for currency fraction digits in the SparkSession
+        spark.udf().register("currencyFractionDigits", (String currencyCode) -> {
+            if (currencyCode == null || currencyCode.isEmpty()) {
+                return 2; // Default to 2 decimal places if currency code is null or invalid
+            }
+            try {
+                Currency currency = Currency.getInstance(currencyCode);
+                return currency.getDefaultFractionDigits();
+            } catch (IllegalArgumentException e) {
+                // Handle cases where the currency code is invalid
+                return 2; // Default to 2 decimal places for unknown currencies
+            }
+        }, org.apache.spark.sql.types.DataTypes.IntegerType);
     }
 
     private static Dataset<Row> transformDataset(
@@ -97,24 +114,5 @@ public class DistributedDatasetProcessor {
         }
 
         return column; // Return as-is for other types
-    }
-
-    private static void registerCurrencyFractionDigitsUDF() {
-        // Register the UDF for currency fraction digits
-        functions.udf(
-            (String currencyCode) -> {
-                if (currencyCode == null || currencyCode.isEmpty()) {
-                    return 2; // Default to 2 decimal places if currency code is null or invalid
-                }
-                try {
-                    Currency currency = Currency.getInstance(currencyCode);
-                    return currency.getDefaultFractionDigits();
-                } catch (IllegalArgumentException e) {
-                    // Handle cases where the currency code is invalid
-                    return 2; // Default to 2 decimal places for unknown currencies
-                }
-            },
-            DataTypes.IntegerType
-        ).asNondeterministic(); // Mark as non-deterministic since currency codes may vary
     }
 }

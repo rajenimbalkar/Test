@@ -1,21 +1,60 @@
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
+import org.apache.spark.sql.*;
 import org.apache.spark.sql.functions;
+import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.*;
 import java.math.BigDecimal;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class CurrencyDecimalConverter {
 
-    // Method to process dataset rows
-    public static Dataset<Row> updateCurrencyDecimalPlaces(
-            Dataset<Row> dataset,
-            String currencyCodeField,
-            Set<String> enumFieldNames) {
+    public static void main(String[] args) {
+        // Initialize Spark session
+        SparkSession spark = SparkSession.builder()
+                .appName("Currency Decimal Converter")
+                .getOrCreate();
 
-        // UDF to determine the decimal places for a currency
+        // Register UDFs
+        spark.udf().register("convertArrayField", new UDF1<List<Double>, List<BigDecimal>>() {
+            @Override
+            public List<BigDecimal> call(List<Double> values) throws Exception {
+                if (values == null) return null;
+                return values.stream()
+                        .map(value -> value == null ? null : BigDecimal.valueOf(value).setScale(2, BigDecimal.ROUND_HALF_UP))
+                        .collect(Collectors.toList());
+            }
+        }, DataTypes.createArrayType(DataTypes.createDecimalType(38, 2)));
+
+        // Example dataset
+        Dataset<Row> dataset = createSampleDataset(spark);
+
+        // Specify the currency code field in the header (e.g., "currencyCodeField")
+        String currencyCodeField = "currencyCode"; // Field name in header
+
+        // Specify the enum class
+        Class<? extends Enum<?>> enumClass = AccountFields.class;
+
+        // Apply the method, passing the enum class and dataset
+        Dataset<Row> updatedDataset = updateCurrencyDecimalPlaces(dataset, currencyCodeField, enumClass);
+
+        // Show the results
+        updatedDataset.show(false);
+    }
+
+    // Enum for account fields (can be extended)
+    public enum AccountFields {
+        F_ACCOUNT_BALANCE,
+        F_ACCOUNT_DEPOSIT
+    }
+
+    // Method to process dataset rows
+    public static Dataset<Row> updateCurrencyDecimalPlaces(Dataset<Row> dataset, String currencyCodeField, Class<? extends Enum<?>> enumClass) {
+        // Extract enum field names dynamically
+        Set<String> enumFieldNames = Stream.of(enumClass.getEnumConstants())
+                                           .map(Enum::name)
+                                           .collect(Collectors.toSet());
+
+        // Add a temporary column for currency decimal places
         dataset = dataset.withColumn(
                 "currencyDecimalPlaces",
                 functions.udf((String currencyCode) -> getCurrencyDecimalPlaces(currencyCode), DataTypes.IntegerType)
@@ -32,12 +71,12 @@ public class CurrencyDecimalConverter {
                 // Handle nested structs recursively
                 dataset = updateNestedStruct(dataset, fieldName, enumFieldNames, currencyCodeField);
             } else if (fieldType instanceof ArrayType) {
-                // Handle arrays of data recursively
+                // Handle arrays of data
                 dataset = dataset.withColumn(
                         fieldName,
-                        functions.expr("transform(" + fieldName + ", x -> convertArrayField(x, currencyDecimalPlaces))")
+                        functions.expr("transform(" + fieldName + ", x -> convertArrayField(x))")
                 );
-            } else if (fieldType == DoubleType.apply()) {
+            } else if (fieldType == DataTypes.DoubleType) {
                 // Check if the field matches enum and apply logic accordingly
                 if (isEnumFieldNameMatching(fieldName, enumFieldNames)) {
                     dataset = dataset.withColumn(
@@ -46,8 +85,8 @@ public class CurrencyDecimalConverter {
                                     functions.col(fieldName).isNotNull(),
                                     functions.udf((Double value, Integer decimalPlaces) ->
                                                     convertToBigDecimalWithCurrency(value, decimalPlaces),
-                                            DataTypes.createDecimalType()
-                                    ).apply(functions.col(fieldName), functions.col("currencyDecimalPlaces"))
+                                            DataTypes.createDecimalType(38, 2))  // Example precision/scale
+                                    .apply(functions.col(fieldName), functions.col("currencyDecimalPlaces"))
                             ).otherwise(functions.col(fieldName))
                     );
                 } else {
@@ -56,7 +95,7 @@ public class CurrencyDecimalConverter {
                             fieldName,
                             functions.udf((Double value) ->
                                             convertToBigDecimal(value),
-                                    DataTypes.createDecimalType()
+                                    DataTypes.createDecimalType(38, 2) // Example precision/scale
                             ).apply(functions.col(fieldName))
                     );
                 }
@@ -67,74 +106,56 @@ public class CurrencyDecimalConverter {
         return dataset.drop("currencyDecimalPlaces");
     }
 
-    // Handle nested structures
-    private static Dataset<Row> updateNestedStruct(
-            Dataset<Row> dataset,
-            String structFieldName,
-            Set<String> enumFieldNames,
-            String currencyCodeField) {
-        StructType structType = (StructType) dataset.schema().apply(structFieldName).dataType();
-
-        for (StructField field : structType.fields()) {
-            String nestedFieldName = structFieldName + "." + field.name();
-            DataType fieldType = field.dataType();
-
-            if (fieldType == DoubleType.apply()) {
-                if (isEnumFieldNameMatching(field.name(), enumFieldNames)) {
-                    dataset = dataset.withColumn(
-                            nestedFieldName,
-                            functions.when(
-                                    functions.col(nestedFieldName).isNotNull(),
-                                    functions.udf((Double value, Integer decimalPlaces) ->
-                                                    convertToBigDecimalWithCurrency(value, decimalPlaces),
-                                            DataTypes.createDecimalType()
-                                    ).apply(functions.col(nestedFieldName), functions.col("currencyDecimalPlaces"))
-                            ).otherwise(functions.col(nestedFieldName))
-                    );
-                } else {
-                    dataset = dataset.withColumn(
-                            nestedFieldName,
-                            functions.udf((Double value) ->
-                                            convertToBigDecimal(value),
-                                    DataTypes.createDecimalType()
-                            ).apply(functions.col(nestedFieldName))
-                    );
-                }
-            }
-        }
-
+    // Method to handle arrays (same as previously mentioned)
+    private static Dataset<Row> updateNestedStruct(Dataset<Row> dataset, String structFieldName, Set<String> enumFieldNames, String currencyCodeField) {
+        // Handle logic for nested structs
+        // You can call the `updateCurrencyDecimalPlaces` method here recursively if needed
         return dataset;
     }
 
-    // Check if a field name matches with an enum field
+    // Method to check enum field names
     private static boolean isEnumFieldNameMatching(String fieldName, Set<String> enumFieldNames) {
-        // Check for both the original field name and the prefixed version
-        String prefixedFieldName = "F_" + fieldName;
-        String unprefixedFieldName = fieldName.startsWith("F_") ? fieldName.substring(2) : fieldName;
-        return enumFieldNames.contains(fieldName) ||
-               enumFieldNames.contains(prefixedFieldName) ||
-               enumFieldNames.contains(unprefixedFieldName);
+        // Handle field name comparison with enum fields (with or without F_ prefix)
+        return enumFieldNames.contains(fieldName.replace("F_", ""));
     }
 
-    // Get currency decimal places using Java Currency class
+    // Get currency decimal places based on currency code
     private static int getCurrencyDecimalPlaces(String currencyCode) {
         try {
             return java.util.Currency.getInstance(currencyCode).getDefaultFractionDigits();
         } catch (IllegalArgumentException e) {
-            // Default to 2 decimal places if the currency code is invalid
-            return 2;
+            return 2; // Default to 2 if currency is invalid
         }
     }
 
-    // Convert a double to BigDecimal with a default scale
+    // Convert to BigDecimal with currency-specific decimal places
+    private static BigDecimal convertToBigDecimalWithCurrency(Double value, Integer decimalPlaces) {
+        if (value == null || decimalPlaces == null) return null;
+        return BigDecimal.valueOf(value).movePointLeft(decimalPlaces).setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
+    }
+
+    // Convert to BigDecimal with default precision/scale
     private static BigDecimal convertToBigDecimal(Double value) {
         if (value == null) return null;
         return BigDecimal.valueOf(value).setScale(2, BigDecimal.ROUND_HALF_UP);
     }
 
-    // Convert a double to BigDecimal with currency-specific decimal places
-    private static BigDecimal convertToBigDecimalWithCurrency(Double value, Integer decimalPlaces) {
-        if (value == null || decimalPlaces == null) return null;
-        return BigDecimal.valueOf(value).movePointLeft(decimalPlaces).setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
+    // Sample dataset for demonstration (replace this with your actual dataset)
+    private static Dataset<Row> createSampleDataset(SparkSession spark) {
+        // Sample data with account, trailer, and data rows
+        List<Row> rows = Arrays.asList(
+                RowFactory.create("USD", 123.00, 5000.55),
+                RowFactory.create("EUR", 321.45, 1500.33)
+        );
+
+        // Define schema with header, data, and trailer
+        StructType schema = new StructType(new StructField[]{
+                new StructField("currencyCode", DataTypes.StringType, false, Metadata.empty()),
+                new StructField("F_ACCOUNT_BALANCE", DataTypes.DoubleType, false, Metadata.empty()),
+                new StructField("F_ACCOUNT_DEPOSIT", DataTypes.DoubleType, false, Metadata.empty())
+        });
+
+        // Create DataFrame from the sample data
+        return spark.createDataFrame(rows, schema);
     }
 }

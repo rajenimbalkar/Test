@@ -1,10 +1,3 @@
-import scala.collection.JavaConverters;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.types.*;
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
-
 private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
     Object[] updatedValues = new Object[originalSchema.fields().length];
 
@@ -32,24 +25,29 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
             // Handle ArrayType: Convert WrappedArray to Java List
             ArrayType arrayType = (ArrayType) originalField.dataType();
             if (arrayType.elementType() instanceof DoubleType) {
-                List<?> arrayList = JavaConverters.asJavaList(value); // Convert WrappedArray to List
-                List<BigDecimal> convertedList = new ArrayList<>();
-                for (Object element : arrayList) {
-                    if (element instanceof Double) {
-                        BigDecimal bigDecimalElement = BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP);
-                        convertedList.add(bigDecimalElement);
-                    } else {
-                        convertedList.add((BigDecimal) element); // If already converted, retain as BigDecimal
+                // Convert Scala WrappedArray to a Java List
+                List<Double> arrayList = new ArrayList<>();
+                for (Object element : (Object[]) value) {
+                    if (element != null) {
+                        arrayList.add((Double) element);
                     }
+                }
+                
+                List<BigDecimal> convertedList = new ArrayList<>();
+                for (Double element : arrayList) {
+                    BigDecimal bigDecimalElement = BigDecimal.valueOf(element).setScale(scale, BigDecimal.ROUND_HALF_UP);
+                    convertedList.add(bigDecimalElement);
                 }
                 updatedValues[i] = convertedList;
             } else if (arrayType.elementType() instanceof StructType) {
-                List<Row> arrayList = JavaConverters.asJavaList(value); // Convert WrappedArray to List
-                List<Row> convertedList = new ArrayList<>();
-                for (Row element : arrayList) {
-                    convertedList.add(convertRow(element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
+                // Convert list of Rows to a list of converted Rows
+                List<Row> arrayList = new ArrayList<>();
+                for (Object element : (Object[]) value) {
+                    if (element != null) {
+                        arrayList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
+                    }
                 }
-                updatedValues[i] = convertedList;
+                updatedValues[i] = arrayList;
             } else {
                 // Keep other ArrayType elements unchanged
                 updatedValues[i] = value;

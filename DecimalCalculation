@@ -1,3 +1,7 @@
+import scala.collection.JavaConverters;
+import scala.collection.mutable.WrappedArray;
+import java.util.List;
+
 private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
     Object[] updatedValues = new Object[originalSchema.fields().length];
 
@@ -27,8 +31,8 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
             if (arrayType.elementType() instanceof DoubleType) {
                 List<Object> arrayList = new ArrayList<>();
                 if (value != null) {
-                    // Convert Scala WrappedArray to a Java List using JavaConverters
-                    JavaList<Object> javaList = JavaConverters.seqAsJavaListConverter(((scala.collection.mutable.WrappedArray<Object>) value).toSeq()).asJava();
+                    // Convert WrappedArray to Java List using JavaConverters
+                    List<Object> javaList = JavaConverters.seqAsJavaListConverter(((WrappedArray<Object>) value).toSeq()).asJava();
                     for (Object element : javaList) {
                         arrayList.add(element);
                     }
@@ -48,7 +52,7 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
                 // Convert list of Rows to a list of converted Rows
                 List<Row> arrayList = new ArrayList<>();
                 if (value != null) {
-                    JavaList<Object> javaList = JavaConverters.seqAsJavaListConverter(((scala.collection.mutable.WrappedArray<Object>) value).toSeq()).asJava();
+                    List<Object> javaList = JavaConverters.seqAsJavaListConverter(((WrappedArray<Object>) value).toSeq()).asJava();
                     for (Object element : javaList) {
                         if (element != null) {
                             arrayList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));

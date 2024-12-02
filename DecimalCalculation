@@ -22,29 +22,38 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
             // Handle nested Row structures
             updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
         } else if (originalField.dataType() instanceof ArrayType) {
-            // Handle ArrayType: Convert WrappedArray to Java List
+            // Handle ArrayType: Convert Scala WrappedArray to Java List
             ArrayType arrayType = (ArrayType) originalField.dataType();
             if (arrayType.elementType() instanceof DoubleType) {
                 // Convert Scala WrappedArray to a Java List
-                List<Double> arrayList = new ArrayList<>();
-                for (Object element : (Object[]) value) {
-                    if (element != null) {
-                        arrayList.add((Double) element);
+                List<Object> arrayList = new ArrayList<>();
+                if (value != null) {
+                    // Convert the array to a Java list
+                    for (Object element : ((scala.collection.mutable.WrappedArray<Object>) value).toArray()) {
+                        if (element != null) {
+                            arrayList.add(element);
+                        }
                     }
                 }
-                
+
                 List<BigDecimal> convertedList = new ArrayList<>();
-                for (Double element : arrayList) {
-                    BigDecimal bigDecimalElement = BigDecimal.valueOf(element).setScale(scale, BigDecimal.ROUND_HALF_UP);
-                    convertedList.add(bigDecimalElement);
+                for (Object element : arrayList) {
+                    if (element instanceof Double) {
+                        BigDecimal bigDecimalElement = BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP);
+                        convertedList.add(bigDecimalElement);
+                    } else {
+                        convertedList.add((BigDecimal) element); // If already converted, retain as BigDecimal
+                    }
                 }
                 updatedValues[i] = convertedList;
             } else if (arrayType.elementType() instanceof StructType) {
                 // Convert list of Rows to a list of converted Rows
                 List<Row> arrayList = new ArrayList<>();
-                for (Object element : (Object[]) value) {
-                    if (element != null) {
-                        arrayList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
+                if (value != null) {
+                    for (Object element : ((scala.collection.mutable.WrappedArray<Object>) value).toArray()) {
+                        if (element != null) {
+                            arrayList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
+                        }
                     }
                 }
                 updatedValues[i] = arrayList;

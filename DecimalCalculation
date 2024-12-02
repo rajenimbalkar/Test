@@ -6,75 +6,78 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.types.*;
 
-private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
-    Object[] updatedValues = new Object[originalSchema.fields().length];
+public class RowConverter {
 
-    for (int i = 0; i < originalSchema.fields().length; i++) {
-        StructField originalField = originalSchema.fields()[i];
-        StructField updatedField = updatedSchema.fields()[i];
-        Object value = row.get(i);
+    public static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
+        Object[] updatedValues = new Object[originalSchema.fields().length];
 
-        if (originalField.dataType() instanceof DoubleType && value instanceof Double) {
-            // Convert Double to BigDecimal
-            BigDecimal bigDecimalValue = BigDecimal.valueOf((Double) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
+        for (int i = 0; i < originalSchema.fields().length; i++) {
+            StructField originalField = originalSchema.fields()[i];
+            StructField updatedField = updatedSchema.fields()[i];
+            Object value = row.get(i);
 
-            // Apply currency-based logic for specific fields
-            if (AmountFields.matches(originalField.name())) {
-                String currencyCode = getCurrencyCode(row);
-                int currencyDecimalPlaces = getCurrencyDecimalPlaces(currencyCode);
-                bigDecimalValue = bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, currencyDecimalPlaces)), BigDecimal.ROUND_HALF_UP);
-            }
+            if (originalField.dataType() instanceof DoubleType && value instanceof Double) {
+                // Convert Double to BigDecimal
+                BigDecimal bigDecimalValue = BigDecimal.valueOf((Double) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
 
-            updatedValues[i] = bigDecimalValue;
-        } else if (originalField.dataType() instanceof StructType) {
-            // Handle nested Row structures
-            updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
-        } else if (originalField.dataType() instanceof ArrayType) {
-            // Handle ArrayType: Convert WrappedArray to Java List
-            ArrayType arrayType = (ArrayType) originalField.dataType();
-            if (arrayType.elementType() instanceof DoubleType) {
-                List<Object> arrayList = new ArrayList<>();
-                if (value != null) {
-                    // Convert WrappedArray to Java List using JavaConverters
-                    List<Object> javaList = JavaConverters.seqAsJavaListConverter(((WrappedArray<Object>) value).toSeq()).asJava();
-                    for (Object element : javaList) {
-                        arrayList.add(element);
-                    }
+                // Apply currency-based logic for specific fields
+                if (AmountFields.matches(originalField.name())) {
+                    String currencyCode = getCurrencyCode(row);
+                    int currencyDecimalPlaces = getCurrencyDecimalPlaces(currencyCode);
+                    bigDecimalValue = bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, currencyDecimalPlaces)), BigDecimal.ROUND_HALF_UP);
                 }
 
-                List<BigDecimal> convertedList = new ArrayList<>();
-                for (Object element : arrayList) {
-                    if (element instanceof Double) {
-                        BigDecimal bigDecimalElement = BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP);
-                        convertedList.add(bigDecimalElement);
-                    } else {
-                        convertedList.add((BigDecimal) element); // If already converted, retain as BigDecimal
-                    }
-                }
-                // Convert the Java List to a Scala WrappedArray for compatibility with Spark
-                updatedValues[i] = WrappedArray.make(convertedList.toArray(new BigDecimal[0]));
-            } else if (arrayType.elementType() instanceof StructType) {
-                // Convert list of Rows to a list of converted Rows
-                List<Row> arrayList = new ArrayList<>();
-                if (value != null) {
-                    List<Object> javaList = JavaConverters.seqAsJavaListConverter(((WrappedArray<Object>) value).toSeq()).asJava();
-                    for (Object element : javaList) {
-                        if (element != null) {
-                            arrayList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
+                updatedValues[i] = bigDecimalValue;
+            } else if (originalField.dataType() instanceof StructType) {
+                // Handle nested Row structures
+                updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
+            } else if (originalField.dataType() instanceof ArrayType) {
+                // Handle ArrayType: Convert Scala WrappedArray to Java List
+                ArrayType arrayType = (ArrayType) originalField.dataType();
+                if (arrayType.elementType() instanceof DoubleType) {
+                    List<Object> arrayList = new ArrayList<>();
+                    if (value != null) {
+                        // Convert WrappedArray to Java List using JavaConverters
+                        List<Object> javaList = JavaConverters.seqAsJavaListConverter(((WrappedArray<Object>) value).toSeq()).asJava();
+                        for (Object element : javaList) {
+                            arrayList.add(element);
                         }
                     }
+
+                    List<BigDecimal> convertedList = new ArrayList<>();
+                    for (Object element : arrayList) {
+                        if (element instanceof Double) {
+                            BigDecimal bigDecimalElement = BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP);
+                            convertedList.add(bigDecimalElement);
+                        } else if (element != null) {
+                            convertedList.add((BigDecimal) element); // If already converted, retain as BigDecimal
+                        }
+                    }
+                    // Convert the Java List to a Scala WrappedArray for compatibility with Spark
+                    updatedValues[i] = WrappedArray.make(convertedList.toArray(new BigDecimal[0]));
+                } else if (arrayType.elementType() instanceof StructType) {
+                    // Convert list of Rows to a list of converted Rows
+                    List<Row> rowList = new ArrayList<>();
+                    if (value != null) {
+                        List<Object> javaList = JavaConverters.seqAsJavaListConverter(((WrappedArray<Object>) value).toSeq()).asJava();
+                        for (Object element : javaList) {
+                            if (element != null) {
+                                rowList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
+                            }
+                        }
+                    }
+                    // Convert the list of Rows to a Scala WrappedArray
+                    updatedValues[i] = WrappedArray.make(rowList.toArray(new Row[0]));
+                } else {
+                    // Keep other ArrayType elements unchanged
+                    updatedValues[i] = value;
                 }
-                // Convert the list of Rows to a Scala WrappedArray
-                updatedValues[i] = WrappedArray.make(arrayList.toArray(new Row[0]));
             } else {
-                // Keep other ArrayType elements unchanged
+                // Keep other values unchanged
                 updatedValues[i] = value;
             }
-        } else {
-            // Keep other values unchanged
-            updatedValues[i] = value;
         }
-    }
 
-    return RowFactory.create(updatedValues);
+        return RowFactory.create(updatedValues);
+    }
 }

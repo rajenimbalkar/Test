@@ -1,46 +1,159 @@
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.functions;
-import scala.collection.JavaConverters;
+To properly incorporate an enum method for checking if a field exists in the `AmountFields` enum (as well as handling the "F_" prefix logic), we can modify the `AmountFields` enum class and implement a utility method that matches your requirements.
 
+Here’s how you can integrate the enum with the rest of your code, including the method to check if a field exists either directly or with the "F_" prefix.
+
+### Enum Method for `AmountFields`
+
+First, we define the `AmountFields` enum with a method to check if a given field name exists in the enum, either directly or with the "F_" prefix.
+
+### Enum Definition: `AmountFields`
+
+```java
+public enum AmountFields {
+    FIELD1, FIELD2, FIELD3;  // Replace with actual enum values
+    
+    // Static set for fast lookup
+    private static final Set<String> fieldsSet = EnumSet.allOf(AmountFields.class).stream()
+            .map(Enum::name)
+            .collect(Collectors.toSet());
+
+    /**
+     * Checks if the given field name matches any of the AmountFields enum values.
+     * It also supports checking for fields with "F_" prefix (e.g., "F_FIELD1").
+     * 
+     * @param fieldName the field name to check
+     * @return true if the field name exists in the enum, either directly or with "F_" prefix
+     */
+    public static boolean contains(String fieldName) {
+        // Check if the fieldName is in the enum directly or with "F_" prefix
+        return fieldsSet.contains(fieldName.toUpperCase()) || 
+               fieldsSet.contains(fieldName.substring(2).toUpperCase()); // Checks for "F_" prefix
+    }
+}
+```
+
+### Key Points:
+1. **Enum Values**: Replace `FIELD1`, `FIELD2`, `FIELD3` with the actual enum values corresponding to the field names you are processing.
+2. **`contains` Method**: This method checks:
+   - If the `fieldName` exists directly in the enum.
+   - If the `fieldName` starts with `F_` and matches any enum value when the prefix is removed (i.e., it checks `FIELD1` for `F_FIELD1`).
+   
+### Integration into Your Dataset Processing
+
+Now, we integrate this `AmountFields.contains()` method into your row processing logic. Here's how it fits into the overall code structure:
+
+### Updated Row Conversion Logic with Enum Handling
+
+```java
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.types.*;
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
+import java.util.EnumSet;
+import java.util.stream.Collectors;
 
 public class DatasetConverter {
 
-    // Main recursive function to convert fields
-    private static Row convertFields(Row row, String currencyCode) {
-        // Convert field names (String[]) to List<String> or Seq<String> for compatibility
-        String[] fieldNames = row.schema().fieldNames();
+    public static Dataset<Row> convertDataset(Dataset<Row> dataset) {
+        return dataset.map(row -> {
+            // Extract the currency code from the header field (assuming the header is a field in the row)
+            Row header = (Row) row.getAs("header");  // Replace "header" with the actual field name if different
+            String currencyCode = getCurrencyCodeFromHeader(header);
+            return convertRow(row, currencyCode, row.schema());
+        }, Encoders.bean(Row.class));
+    }
 
-        // Iterate over each field
-        for (String fieldName : fieldNames) {
-            // Get the value of the current field dynamically
-            Object value = row.getAs(fieldName);
+    private static String getCurrencyCodeFromHeader(Row header) {
+        // Replace "currencyCodeField" with the actual field name that holds the currency code in the header
+        return header != null ? header.getAs("currencyCodeField") : "USD";  // Fallback value if the field is null
+    }
 
-            // If the value is of type Double, convert to BigDecimal
+    private static Row convertRow(Row row, String currencyCode, StructType schema) {
+        // Convert the fields to their updated values
+        List<Object> updatedValues = row.getValuesAsList();  // Get a list of current row values
+        String[] fieldNames = schema.fieldNames();  // Get the field names
+
+        for (int i = 0; i < fieldNames.length; i++) {
+            String fieldName = fieldNames[i];
+            Object value = updatedValues.get(i);
+
             if (value instanceof Double) {
+                // Convert to BigDecimal with precision 17 and scale 4 for all double fields
                 BigDecimal bigDecimalValue = CurrencyUtils.convertToBigDecimal((Double) value);
 
                 // Apply currency logic if the field matches the condition
-                if (AmountFields.contains(fieldName) || (fieldName.startsWith("F_") && AmountFields.contains(fieldName.substring(2)))) {
+                if (AmountFields.contains(fieldName)) {
                     bigDecimalValue = CurrencyUtils.convertToBigDecimalWithCurrencyLogic((Double) value, currencyCode);
                 }
 
-                // Update the field value in the row
-                row = row.withColumn(fieldName, functions.lit(bigDecimalValue));
+                // Update the field value in the updated list of values
+                updatedValues.set(i, bigDecimalValue);
             } else if (value instanceof Row) {
-                // If the value is a nested Row, recurse into it
-                row = row.withColumn(fieldName, functions.lit(convertFields((Row) value, currencyCode)));
+                // Recursively handle nested Row objects
+                updatedValues.set(i, convertRow((Row) value, currencyCode, schema));
             } else if (value instanceof List) {
-                // If the value is an array (List of Rows), process each row in the list
+                // Handle array of data (List of Rows)
                 List<Row> rows = (List<Row>) value;
-                for (int i = 0; i < rows.size(); i++) {
-                    rows.set(i, convertFields(rows.get(i), currencyCode));
+                for (int j = 0; j < rows.size(); j++) {
+                    rows.set(j, convertRow(rows.get(j), currencyCode, schema));
                 }
-                row = row.withColumn(fieldName, functions.lit(rows));
+                updatedValues.set(i, rows);
             }
         }
-        return row;
+
+        // Construct a new Row using schema and updated values dynamically
+        return createRowWithSchema(updatedValues, schema);
+    }
+
+    private static Row createRowWithSchema(List<Object> updatedValues, StructType schema) {
+        // Prepare an array of the updated values
+        Object[] updatedRow = updatedValues.toArray();
+
+        // Use the schema to create a new Row
+        return new GenericRowWithSchema(updatedRow, schema);
     }
 }
+```
+
+### Explanation:
+
+1. **Using `AmountFields.contains(fieldName)`**:
+   - This call checks if the current field name exists in the `AmountFields` enum. It does so either by checking the field name directly (`FIELD1`) or by checking for the prefix `F_` (`F_FIELD1`).
+
+2. **BigDecimal Conversion**:
+   - For fields matching the enum values (direct or with the prefix `F_`), the value is converted to a `BigDecimal`, and if necessary, the value is divided by the appropriate decimal places as determined by the currency code.
+
+3. **Row Creation with Schema**:
+   - Once all fields are processed, a new `Row` is created dynamically using the schema and the updated list of values.
+
+### Final Example of Usage:
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class Main {
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder().appName("Dynamic Dataset Conversion").getOrCreate();
+
+        // Load your dataset (ensure it's a JSON, Parquet, or other supported format)
+        Dataset<Row> dataset = spark.read().json("path_to_your_data.json");
+
+        // Convert the dataset with dynamic currency code extraction
+        Dataset<Row> updatedDataset = DatasetConverter.convertDataset(dataset);
+
+        // Show or save the updated dataset
+        updatedDataset.show();
+    }
+}
+```
+
+### Summary:
+
+- **Enum Method**: The `AmountFields.contains()` method is used to check if a given field (or its `F_` prefixed version) matches an enum value.
+- **Currency Handling**: The value is converted to `BigDecimal` based on currency logic if it matches the condition from the enum.
+- **Dynamic Row Creation**: We use the schema of the original row to create a new row without hardcoding the structure, ensuring flexibility for different datasets.
+
+This solution dynamically handles field transformations based on enum values and works with a dynamic schema for your Spark dataset rows.

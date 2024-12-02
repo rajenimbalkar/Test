@@ -40,4 +40,103 @@ public class DatasetConverter {
                     List<Row> updatedDataArray = new ArrayList<>();
                     for (Row dataRow : dataArray) {
                         StructType dataSchema = (StructType) dataRow.schema();
-                        updatedDataArray.add(convertRow(dataRow, dataSchema, precision, scale, currencyC
+                        updatedDataArray.add(convertRow(dataRow, dataSchema, precision, scale, currencyCode));
+                    }
+                    updatedRowArray.add(updatedDataArray);
+                } else {
+                    // Leave other types unchanged
+                    updatedRowArray.add(element);
+                }
+            }
+
+            // Return the updated row as a new GenericRow
+            return RowFactory.create(updatedRowArray.toArray());
+        }, Encoders.row(dataset.schema()));
+    }
+
+    /**
+     * Recursively converts all `Long` fields in a row to `BigDecimal` and applies currency-based formatting.
+     *
+     * @param row          The current row being processed.
+     * @param schema       The schema of the row.
+     * @param precision    The precision of the `BigDecimal`.
+     * @param scale        The scale of the `BigDecimal`.
+     * @param currencyCode The currency code for formatting.
+     * @return A new row with updated fields.
+     */
+    private static Row convertRow(Row row, StructType schema, int precision, int scale, String currencyCode) {
+        List<Object> updatedValues = new ArrayList<>();
+
+        for (int i = 0; i < schema.fields().length; i++) {
+            StructField field = schema.fields()[i];
+            Object value = row.get(i);
+
+            if (value instanceof Long) {
+                BigDecimal bigDecimalValue = BigDecimal.valueOf((Long) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
+
+                // Check if the field matches an enum value or prefixed with F_
+                if (AmountFields.matches(field.name())) {
+                    int currencyDecimalPlaces = getCurrencyDecimalPlaces(currencyCode);
+                    bigDecimalValue = bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, currencyDecimalPlaces)), BigDecimal.ROUND_HALF_UP);
+                }
+
+                updatedValues.add(bigDecimalValue);
+            } else if (value instanceof Row) {
+                // Handle nested Row objects (e.g., nested structs)
+                updatedValues.add(convertRow((Row) value, (StructType) field.dataType(), precision, scale, currencyCode));
+            } else if (value instanceof List) {
+                // Handle array of Rows
+                List<Row> nestedRows = (List<Row>) value;
+                List<Row> updatedRows = new ArrayList<>();
+                for (Row nestedRow : nestedRows) {
+                    updatedRows.add(convertRow(nestedRow, (StructType) field.dataType(), precision, scale, currencyCode));
+                }
+                updatedValues.add(updatedRows);
+            } else {
+                // Keep the original value for other data types
+                updatedValues.add(value);
+            }
+        }
+
+        // Construct a new Row with the updated values
+        return new GenericRowWithSchema(updatedValues.toArray(), schema);
+    }
+
+    /**
+     * Gets the decimal places for a given currency code using the Java Currency class.
+     *
+     * @param currencyCode The 3-character ISO currency code.
+     * @return The number of decimal places for the currency.
+     */
+    private static int getCurrencyDecimalPlaces(String currencyCode) {
+        try {
+            Currency currency = Currency.getInstance(currencyCode);
+            return currency.getDefaultFractionDigits();
+        } catch (IllegalArgumentException e) {
+            // Default to 2 decimal places if currency code is invalid
+            return 2;
+        }
+    }
+
+    /**
+     * Enum representing fields that require currency-based logic.
+     */
+    public enum AmountFields {
+        FIELD1, FIELD2, FIELD3; // Replace with actual field names
+
+        /**
+         * Checks if a field name matches the enum or is prefixed with F_ and matches the enum.
+         *
+         * @param fieldName The field name to check.
+         * @return True if the field matches the enum, otherwise false.
+         */
+        public static boolean matches(String fieldName) {
+            for (AmountFields field : AmountFields.values()) {
+                if (field.name().equalsIgnoreCase(fieldName) || fieldName.startsWith("F_") && fieldName.substring(2).equalsIgnoreCase(field.name())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+}

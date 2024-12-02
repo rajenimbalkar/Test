@@ -1,7 +1,9 @@
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.Encoders;
+import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.types.*;
+import org.apache.spark.sql.Encoders;
+
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Currency;
@@ -10,96 +12,106 @@ import java.util.List;
 public class DatasetConverter {
 
     /**
-     * Converts all `Long` datatype fields in a dataset where each row is an array type into `BigDecimal`
-     * and applies currency-based formatting for matched fields.
+     * Converts all `LongType` fields in a dataset into `DecimalType` with precision and scale, 
+     * applying currency-based logic for specific fields.
      *
      * @param dataset   The input dataset.
      * @param precision The precision of the `BigDecimal`.
      * @param scale     The scale of the `BigDecimal`.
-     * @return Updated dataset with `Long` fields converted to `BigDecimal` and formatted per currency.
+     * @return The transformed dataset with updated schema.
      */
     public static Dataset<Row> convertArrayRowsWithCurrencyLogic(Dataset<Row> dataset, int precision, int scale) {
-        return dataset.map(row -> {
-            List<Object> updatedRowArray = new ArrayList<>();
+        StructType originalSchema = dataset.schema();
 
-            // Extract the currency code from the header
-            Row header = (Row) row.getAs("header"); // Adjust field name as necessary
-            String currencyCode = header != null ? header.getAs("currencyCode") : "USD"; // Default to USD if missing
+        // Generate updated schema with DecimalType for LongType fields
+        StructType updatedSchema = updateSchemaForDecimals(originalSchema, precision, scale);
 
-            // Process each element of the row array
-            for (int i = 0; i < row.size(); i++) {
-                Object element = row.get(i);
-
-                if (element instanceof Row) {
-                    // If the element is a Row (e.g., header or trailer), process it recursively
-                    StructType elementSchema = (StructType) ((Row) element).schema();
-                    updatedRowArray.add(convertRow((Row) element, elementSchema, precision, scale, currencyCode));
-                } else if (element instanceof List) {
-                    // If the element is a list (e.g., array of data rows), process each Row in the list
-                    List<Row> dataArray = (List<Row>) element;
-                    List<Row> updatedDataArray = new ArrayList<>();
-                    for (Row dataRow : dataArray) {
-                        StructType dataSchema = (StructType) dataRow.schema();
-                        updatedDataArray.add(convertRow(dataRow, dataSchema, precision, scale, currencyCode));
-                    }
-                    updatedRowArray.add(updatedDataArray);
-                } else {
-                    // Leave other types unchanged
-                    updatedRowArray.add(element);
-                }
-            }
-
-            // Return the updated row as a new GenericRow
-            return RowFactory.create(updatedRowArray.toArray());
-        }, Encoders.row(dataset.schema()));
+        // Transform rows
+        return dataset.map(row -> convertRow(row, originalSchema, updatedSchema, precision, scale), RowEncoder.apply(updatedSchema));
     }
 
     /**
-     * Recursively converts all `Long` fields in a row to `BigDecimal` and applies currency-based formatting.
+     * Recursively updates a schema to replace `LongType` fields with `DecimalType`.
      *
-     * @param row          The current row being processed.
-     * @param schema       The schema of the row.
-     * @param precision    The precision of the `BigDecimal`.
-     * @param scale        The scale of the `BigDecimal`.
-     * @param currencyCode The currency code for formatting.
-     * @return A new row with updated fields.
+     * @param schema    The original schema.
+     * @param precision The precision for DecimalType.
+     * @param scale     The scale for DecimalType.
+     * @return The updated schema with DecimalType.
      */
-    private static Row convertRow(Row row, StructType schema, int precision, int scale, String currencyCode) {
-        List<Object> updatedValues = new ArrayList<>();
+    private static StructType updateSchemaForDecimals(StructType schema, int precision, int scale) {
+        List<StructField> updatedFields = new ArrayList<>();
 
-        for (int i = 0; i < schema.fields().length; i++) {
-            StructField field = schema.fields()[i];
+        for (StructField field : schema.fields()) {
+            if (field.dataType() instanceof LongType) {
+                // Replace LongType with DecimalType
+                updatedFields.add(new StructField(field.name(), DataTypes.createDecimalType(precision, scale), field.nullable(), field.metadata()));
+            } else if (field.dataType() instanceof StructType) {
+                // Handle nested StructType
+                updatedFields.add(new StructField(field.name(), updateSchemaForDecimals((StructType) field.dataType(), precision, scale), field.nullable(), field.metadata()));
+            } else {
+                // Leave other types unchanged
+                updatedFields.add(field);
+            }
+        }
+
+        return new StructType(updatedFields.toArray(new StructField[0]));
+    }
+
+    /**
+     * Recursively converts a row's fields to match the updated schema.
+     *
+     * @param row           The row being processed.
+     * @param originalSchema The original schema of the row.
+     * @param updatedSchema The updated schema with DecimalType fields.
+     * @param precision     The precision for BigDecimal.
+     * @param scale         The scale for BigDecimal.
+     * @return The transformed row with updated fields.
+     */
+    private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
+        Object[] updatedValues = new Object[originalSchema.fields().length];
+
+        for (int i = 0; i < originalSchema.fields().length; i++) {
+            StructField originalField = originalSchema.fields()[i];
+            StructField updatedField = updatedSchema.fields()[i];
             Object value = row.get(i);
 
-            if (value instanceof Long) {
+            if (originalField.dataType() instanceof LongType && value instanceof Long) {
+                // Convert Long to BigDecimal
                 BigDecimal bigDecimalValue = BigDecimal.valueOf((Long) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
 
-                // Check if the field matches an enum value or prefixed with F_
-                if (AmountFields.matches(field.name())) {
+                // Apply currency-based logic for specific fields
+                if (AmountFields.matches(originalField.name())) {
+                    String currencyCode = getCurrencyCode(row);
                     int currencyDecimalPlaces = getCurrencyDecimalPlaces(currencyCode);
                     bigDecimalValue = bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, currencyDecimalPlaces)), BigDecimal.ROUND_HALF_UP);
                 }
 
-                updatedValues.add(bigDecimalValue);
-            } else if (value instanceof Row) {
-                // Handle nested Row objects (e.g., nested structs)
-                updatedValues.add(convertRow((Row) value, (StructType) field.dataType(), precision, scale, currencyCode));
-            } else if (value instanceof List) {
-                // Handle array of Rows
-                List<Row> nestedRows = (List<Row>) value;
-                List<Row> updatedRows = new ArrayList<>();
-                for (Row nestedRow : nestedRows) {
-                    updatedRows.add(convertRow(nestedRow, (StructType) field.dataType(), precision, scale, currencyCode));
-                }
-                updatedValues.add(updatedRows);
+                updatedValues[i] = bigDecimalValue;
+            } else if (originalField.dataType() instanceof StructType) {
+                // Handle nested Row structures
+                updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
             } else {
-                // Keep the original value for other data types
-                updatedValues.add(value);
+                // Keep other values unchanged
+                updatedValues[i] = value;
             }
         }
 
-        // Construct a new Row with the updated values
-        return new GenericRowWithSchema(updatedValues.toArray(), schema);
+        return RowFactory.create(updatedValues);
+    }
+
+    /**
+     * Gets the currency code from the row, defaulting to USD if not found.
+     *
+     * @param row The row containing the currency code.
+     * @return The currency code as a 3-character string.
+     */
+    private static String getCurrencyCode(Row row) {
+        try {
+            Row header = row.getAs("header"); // Adjust field name as per your dataset
+            return header.getAs("currencyCode");
+        } catch (Exception e) {
+            return "USD"; // Default currency code
+        }
     }
 
     /**
@@ -113,8 +125,7 @@ public class DatasetConverter {
             Currency currency = Currency.getInstance(currencyCode);
             return currency.getDefaultFractionDigits();
         } catch (IllegalArgumentException e) {
-            // Default to 2 decimal places if currency code is invalid
-            return 2;
+            return 2; // Default to 2 decimal places if the currency code is invalid
         }
     }
 
@@ -132,7 +143,7 @@ public class DatasetConverter {
          */
         public static boolean matches(String fieldName) {
             for (AmountFields field : AmountFields.values()) {
-                if (field.name().equalsIgnoreCase(fieldName) || fieldName.startsWith("F_") && fieldName.substring(2).equalsIgnoreCase(field.name())) {
+                if (field.name().equalsIgnoreCase(fieldName) || (fieldName.startsWith("F_") && fieldName.substring(2).equalsIgnoreCase(field.name()))) {
                     return true;
                 }
             }

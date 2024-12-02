@@ -1,6 +1,4 @@
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.*;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.sql.Encoders;
 
@@ -12,7 +10,7 @@ import java.util.List;
 public class DatasetConverter {
 
     /**
-     * Converts all `LongType` fields in a dataset into `DecimalType` with precision and scale, 
+     * Converts all `DoubleType` fields in a dataset into `DecimalType` with precision and scale,
      * applying currency-based logic for specific fields.
      *
      * @param dataset   The input dataset.
@@ -23,7 +21,7 @@ public class DatasetConverter {
     public static Dataset<Row> convertArrayRowsWithCurrencyLogic(Dataset<Row> dataset, int precision, int scale) {
         StructType originalSchema = dataset.schema();
 
-        // Generate updated schema with DecimalType for LongType fields
+        // Generate updated schema with DecimalType for DoubleType fields
         StructType updatedSchema = updateSchemaForDecimals(originalSchema, precision, scale);
 
         // Transform rows
@@ -31,7 +29,7 @@ public class DatasetConverter {
     }
 
     /**
-     * Recursively updates a schema to replace `LongType` fields with `DecimalType`.
+     * Recursively updates a schema to replace `DoubleType` fields and elements in arrays with `DecimalType`.
      *
      * @param schema    The original schema.
      * @param precision The precision for DecimalType.
@@ -42,12 +40,29 @@ public class DatasetConverter {
         List<StructField> updatedFields = new ArrayList<>();
 
         for (StructField field : schema.fields()) {
-            if (field.dataType() instanceof LongType) {
-                // Replace LongType with DecimalType
+            DataType fieldType = field.dataType();
+
+            if (fieldType instanceof DoubleType) {
+                // Replace DoubleType with DecimalType
                 updatedFields.add(new StructField(field.name(), DataTypes.createDecimalType(precision, scale), field.nullable(), field.metadata()));
-            } else if (field.dataType() instanceof StructType) {
-                // Handle nested StructType
-                updatedFields.add(new StructField(field.name(), updateSchemaForDecimals((StructType) field.dataType(), precision, scale), field.nullable(), field.metadata()));
+            } else if (fieldType instanceof StructType) {
+                // Recursively process nested StructType
+                updatedFields.add(new StructField(field.name(), updateSchemaForDecimals((StructType) fieldType, precision, scale), field.nullable(), field.metadata()));
+            } else if (fieldType instanceof ArrayType) {
+                // Process ArrayType: replace DoubleType elements with DecimalType
+                ArrayType arrayType = (ArrayType) fieldType;
+                DataType elementType = arrayType.elementType();
+
+                if (elementType instanceof DoubleType) {
+                    // Replace Array[DoubleType] with Array[DecimalType]
+                    updatedFields.add(new StructField(field.name(), DataTypes.createArrayType(DataTypes.createDecimalType(precision, scale)), field.nullable(), field.metadata()));
+                } else if (elementType instanceof StructType) {
+                    // Recursively process nested StructType elements in ArrayType
+                    updatedFields.add(new StructField(field.name(), DataTypes.createArrayType(updateSchemaForDecimals((StructType) elementType, precision, scale)), field.nullable(), field.metadata()));
+                } else {
+                    // Keep other ArrayType elements unchanged
+                    updatedFields.add(field);
+                }
             } else {
                 // Leave other types unchanged
                 updatedFields.add(field);
@@ -75,9 +90,9 @@ public class DatasetConverter {
             StructField updatedField = updatedSchema.fields()[i];
             Object value = row.get(i);
 
-            if (originalField.dataType() instanceof LongType && value instanceof Long) {
-                // Convert Long to BigDecimal
-                BigDecimal bigDecimalValue = BigDecimal.valueOf((Long) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
+            if (originalField.dataType() instanceof DoubleType && value instanceof Double) {
+                // Convert Double to BigDecimal
+                BigDecimal bigDecimalValue = BigDecimal.valueOf((Double) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
 
                 // Apply currency-based logic for specific fields
                 if (AmountFields.matches(originalField.name())) {
@@ -90,6 +105,20 @@ public class DatasetConverter {
             } else if (originalField.dataType() instanceof StructType) {
                 // Handle nested Row structures
                 updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
+            } else if (originalField.dataType() instanceof ArrayType) {
+                // Handle ArrayType
+                ArrayType arrayType = (ArrayType) originalField.dataType();
+                if (arrayType.elementType() instanceof DoubleType) {
+                    updatedValues[i] = ((List<?>) value).stream()
+                        .map(element -> BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP))
+                        .toList();
+                } else if (arrayType.elementType() instanceof StructType) {
+                    updatedValues[i] = ((List<Row>) value).stream()
+                        .map(element -> convertRow(element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale))
+                        .toList();
+                } else {
+                    updatedValues[i] = value; // Keep other ArrayType elements unchanged
+                }
             } else {
                 // Keep other values unchanged
                 updatedValues[i] = value;
@@ -149,5 +178,30 @@ public class DatasetConverter {
             }
             return false;
         }
+    }
+}
+
+/**
+ * Enum representing fields that require currency-based logic.
+ */
+public enum AmountFields {
+    FIELD1, FIELD2, FIELD3; // Replace with actual field names
+
+    /**
+     * Checks if a field name matches the enum or has an underscore with the right-hand part matching the enum.
+     *
+     * @param fieldName The field name to check.
+     * @return True if the field matches the enum or the right side of an underscore matches, otherwise false.
+     */
+    public static boolean matches(String fieldName) {
+        for (AmountFields field : AmountFields.values()) {
+            String enumName = field.name();
+            // Match exact field name or the part after the last underscore
+            if (fieldName.equalsIgnoreCase(enumName) || 
+                (fieldName.contains("_") && fieldName.substring(fieldName.lastIndexOf("_") + 1).equalsIgnoreCase(enumName))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

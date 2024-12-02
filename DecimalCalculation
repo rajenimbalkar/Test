@@ -1,40 +1,10 @@
-To make the solution dynamic and adaptable to any structure of a dataset with an array of data, we need to ensure the code can traverse through any row's schema and apply the required conversion logic to fields of type `Double` without hard-coding the field names or the data structure. We will make use of recursion to handle nested structures.
+To fetch the currency code from the header for each row in the dataset, we need to modify the `convertDataset` method to extract the currency code dynamically from the header for each row. This can be achieved by ensuring that the `convertFields` method can access and use the currency code from the header field.
 
-Here's how you can modify the implementation:
+### Updated Implementation:
+1. **Assume the header is a `Row` field with a field name like `"header"` or similar**.
+2. **Extract the currency code from the header field** and pass it to the `convertFields` method.
 
-### 1. **Utility Methods for Conversion**:
-We'll use utility methods to convert `Double` fields to `BigDecimal` with the specified precision and scale and apply currency-based logic if needed.
-
-```java
-import java.math.BigDecimal;
-import java.util.Currency;
-
-public class CurrencyUtils {
-    
-    // Convert a double value to BigDecimal with precision 17 and scale 4
-    public static BigDecimal convertToBigDecimal(double value) {
-        return new BigDecimal(value).setScale(4, BigDecimal.ROUND_HALF_UP);
-    }
-
-    // Convert a double value to BigDecimal with currency logic, based on the currency code
-    public static BigDecimal convertToBigDecimalWithCurrencyLogic(double value, String currencyCode) {
-        Currency currency = Currency.getInstance(currencyCode);
-        int decimalPlaces = currency.getDefaultFractionDigits();
-        
-        // Convert to BigDecimal with precision 17 and scale 4
-        BigDecimal bigDecimalValue = new BigDecimal(value).setScale(4, BigDecimal.ROUND_HALF_UP);
-        
-        // Divide the value by 10^decimalPlaces if decimalPlaces > 0
-        if (decimalPlaces > 0) {
-            return bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, decimalPlaces)), 4, BigDecimal.ROUND_HALF_UP);
-        }
-        return bigDecimalValue;
-    }
-}
-```
-
-### 2. **Recursive Field Conversion**:
-The following method will traverse through all fields in a row, including nested structures like arrays and sub-rows, and convert `double` fields as per the specified logic.
+### Updated Code:
 
 ```java
 import org.apache.spark.sql.Row;
@@ -47,9 +17,19 @@ import java.util.List;
 
 public class DatasetConverter {
 
-    public static Dataset<Row> convertDataset(Dataset<Row> dataset, String currencyCode) {
+    public static Dataset<Row> convertDataset(Dataset<Row> dataset) {
         // Map over the dataset rows and apply the conversion
-        return dataset.map(row -> convertRow(row, currencyCode), Encoders.bean(Row.class));
+        return dataset.map(row -> {
+            // Extract the currency code from the header field
+            Row header = (Row) row.getAs("header");  // Replace "header" with the actual field name if different
+            String currencyCode = getCurrencyCodeFromHeader(header);
+            return convertRow(row, currencyCode);
+        }, Encoders.bean(Row.class));
+    }
+
+    private static String getCurrencyCodeFromHeader(Row header) {
+        // Replace "currencyCodeField" with the actual field name that holds the currency code in the header
+        return header != null ? header.getAs("currencyCodeField") : "USD";  // Fallback value if the field is null
     }
 
     private static Row convertRow(Row row, String currencyCode) {
@@ -92,9 +72,20 @@ public class DatasetConverter {
 }
 ```
 
-### 3. **Usage in Main Application**:
-Use this method to read your dataset and apply the conversion logic dynamically.
+### Explanation:
+1. **`getCurrencyCodeFromHeader` Method**:
+   - This method extracts the currency code from the header field of a row.
+   - Replace `"currencyCodeField"` with the actual name of the field in the header that holds the currency code.
 
+2. **`convertDataset` Method**:
+   - Calls `getCurrencyCodeFromHeader` to get the currency code for each row.
+   - Passes the currency code to `convertRow` and `convertFields` for each row's processing.
+
+3. **Handling Nested Structures**:
+   - The `convertFields` method uses recursion to handle nested `Row` objects and arrays.
+   - The array processing iterates over each `Row` in the list, converting its fields and applying the currency logic as necessary.
+
+### Usage in Main Application:
 ```java
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -107,11 +98,8 @@ public class Main {
         // Load your dataset (ensure it's a JSON, Parquet, or other supported format)
         Dataset<Row> dataset = spark.read().json("path_to_your_data.json");
 
-        // Define the currency code dynamically, potentially from a header field
-        String currencyCode = "USD";  // This should be set based on your data context
-
-        // Convert the dataset
-        Dataset<Row> updatedDataset = DatasetConverter.convertDataset(dataset, currencyCode);
+        // Convert the dataset with dynamic currency code extraction
+        Dataset<Row> updatedDataset = DatasetConverter.convertDataset(dataset);
 
         // Show or save the updated dataset
         updatedDataset.show();
@@ -119,24 +107,13 @@ public class Main {
 }
 ```
 
-### Explanation:
-1. **CurrencyUtils Class**:
-   - Provides methods to convert `double` values to `BigDecimal` with a fixed precision and scale.
-   - Includes a method that applies division logic based on the currency code's decimal places.
+### Key Points:
+- **Dynamic Currency Code**: The `currencyCode` is dynamically fetched from the header field for each row.
+- **Recursive Field Conversion**: The code handles nested `Row` objects and lists, ensuring all `double` fields are processed and converted.
+- **Precision and Scale**: All `double` values are converted to `BigDecimal` with precision `17` and scale `4`, while currency logic is applied selectively.
 
-2. **DatasetConverter Class**:
-   - Uses recursion to handle fields that are nested within arrays or other `Row` objects.
-   - Converts each `double` field to `BigDecimal` and applies the currency logic for fields that match the `AmountFields` enum or have an `F_` prefix.
+### Customization:
+- **Field Names**: Ensure that `currencyCodeField` matches the actual field name in your header that holds the currency code.
+- **Error Handling**: You might want to add error handling or logging if the currency code field is missing or invalid.
 
-3. **Dynamic Structure Handling**:
-   - The code works dynamically by checking the type of each field.
-   - If the field is a `Double`, it converts it to `BigDecimal`.
-   - If the field is a nested `Row`, the method calls itself recursively.
-   - If the field is a `List` (array), it iterates through each item and applies the conversion.
-
-### Benefits:
-- **Dynamic**: The code adapts to any data structure without needing hard-coded names or paths.
-- **Scalable**: Works with any nested structure of rows and arrays.
-- **Flexible**: You can easily extend the logic to support additional conditions or field types as needed.
-
-This approach will process your dataset row by row, convert all `double` fields to `BigDecimal` with the specified precision and scale, and apply the currency logic only to fields that match the enum or have an `F_` prefix.
+This solution ensures that the currency code extraction and field conversion are done dynamically for each row, supporting various row structures in your dataset.

@@ -2,6 +2,9 @@ import scala.collection.JavaConverters;
 import scala.collection.mutable.WrappedArray;
 import java.util.List;
 import java.util.ArrayList;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.types.*;
 
 private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
     Object[] updatedValues = new Object[originalSchema.fields().length];

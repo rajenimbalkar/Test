@@ -1,207 +1,64 @@
-import org.apache.spark.sql.*;
+import scala.collection.JavaConverters;
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.types.*;
-import org.apache.spark.sql.Encoders;
-
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Currency;
 import java.util.List;
 
-public class DatasetConverter {
+private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
+    Object[] updatedValues = new Object[originalSchema.fields().length];
 
-    /**
-     * Converts all `DoubleType` fields in a dataset into `DecimalType` with precision and scale,
-     * applying currency-based logic for specific fields.
-     *
-     * @param dataset   The input dataset.
-     * @param precision The precision of the `BigDecimal`.
-     * @param scale     The scale of the `BigDecimal`.
-     * @return The transformed dataset with updated schema.
-     */
-    public static Dataset<Row> convertArrayRowsWithCurrencyLogic(Dataset<Row> dataset, int precision, int scale) {
-        StructType originalSchema = dataset.schema();
+    for (int i = 0; i < originalSchema.fields().length; i++) {
+        StructField originalField = originalSchema.fields()[i];
+        StructField updatedField = updatedSchema.fields()[i];
+        Object value = row.get(i);
 
-        // Generate updated schema with DecimalType for DoubleType fields
-        StructType updatedSchema = updateSchemaForDecimals(originalSchema, precision, scale);
+        if (originalField.dataType() instanceof DoubleType && value instanceof Double) {
+            // Convert Double to BigDecimal
+            BigDecimal bigDecimalValue = BigDecimal.valueOf((Double) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
 
-        // Transform rows
-        return dataset.map(row -> convertRow(row, originalSchema, updatedSchema, precision, scale), RowEncoder.apply(updatedSchema));
-    }
-
-    /**
-     * Recursively updates a schema to replace `DoubleType` fields and elements in arrays with `DecimalType`.
-     *
-     * @param schema    The original schema.
-     * @param precision The precision for DecimalType.
-     * @param scale     The scale for DecimalType.
-     * @return The updated schema with DecimalType.
-     */
-    private static StructType updateSchemaForDecimals(StructType schema, int precision, int scale) {
-        List<StructField> updatedFields = new ArrayList<>();
-
-        for (StructField field : schema.fields()) {
-            DataType fieldType = field.dataType();
-
-            if (fieldType instanceof DoubleType) {
-                // Replace DoubleType with DecimalType
-                updatedFields.add(new StructField(field.name(), DataTypes.createDecimalType(precision, scale), field.nullable(), field.metadata()));
-            } else if (fieldType instanceof StructType) {
-                // Recursively process nested StructType
-                updatedFields.add(new StructField(field.name(), updateSchemaForDecimals((StructType) fieldType, precision, scale), field.nullable(), field.metadata()));
-            } else if (fieldType instanceof ArrayType) {
-                // Process ArrayType: replace DoubleType elements with DecimalType
-                ArrayType arrayType = (ArrayType) fieldType;
-                DataType elementType = arrayType.elementType();
-
-                if (elementType instanceof DoubleType) {
-                    // Replace Array[DoubleType] with Array[DecimalType]
-                    updatedFields.add(new StructField(field.name(), DataTypes.createArrayType(DataTypes.createDecimalType(precision, scale)), field.nullable(), field.metadata()));
-                } else if (elementType instanceof StructType) {
-                    // Recursively process nested StructType elements in ArrayType
-                    updatedFields.add(new StructField(field.name(), DataTypes.createArrayType(updateSchemaForDecimals((StructType) elementType, precision, scale)), field.nullable(), field.metadata()));
-                } else {
-                    // Keep other ArrayType elements unchanged
-                    updatedFields.add(field);
-                }
-            } else {
-                // Leave other types unchanged
-                updatedFields.add(field);
+            // Apply currency-based logic for specific fields
+            if (AmountFields.matches(originalField.name())) {
+                String currencyCode = getCurrencyCode(row);
+                int currencyDecimalPlaces = getCurrencyDecimalPlaces(currencyCode);
+                bigDecimalValue = bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, currencyDecimalPlaces)), BigDecimal.ROUND_HALF_UP);
             }
-        }
 
-        return new StructType(updatedFields.toArray(new StructField[0]));
-    }
-
-    /**
-     * Recursively converts a row's fields to match the updated schema.
-     *
-     * @param row           The row being processed.
-     * @param originalSchema The original schema of the row.
-     * @param updatedSchema The updated schema with DecimalType fields.
-     * @param precision     The precision for BigDecimal.
-     * @param scale         The scale for BigDecimal.
-     * @return The transformed row with updated fields.
-     */
-    private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
-        Object[] updatedValues = new Object[originalSchema.fields().length];
-
-        for (int i = 0; i < originalSchema.fields().length; i++) {
-            StructField originalField = originalSchema.fields()[i];
-            StructField updatedField = updatedSchema.fields()[i];
-            Object value = row.get(i);
-
-            if (originalField.dataType() instanceof DoubleType && value instanceof Double) {
-                // Convert Double to BigDecimal
-                BigDecimal bigDecimalValue = BigDecimal.valueOf((Double) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
-
-                // Apply currency-based logic for specific fields
-                if (AmountFields.matches(originalField.name())) {
-                    String currencyCode = getCurrencyCode(row);
-                    int currencyDecimalPlaces = getCurrencyDecimalPlaces(currencyCode);
-                    bigDecimalValue = bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, currencyDecimalPlaces)), BigDecimal.ROUND_HALF_UP);
+            updatedValues[i] = bigDecimalValue;
+        } else if (originalField.dataType() instanceof StructType) {
+            // Handle nested Row structures
+            updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
+        } else if (originalField.dataType() instanceof ArrayType) {
+            // Handle ArrayType: Convert WrappedArray to Java List
+            ArrayType arrayType = (ArrayType) originalField.dataType();
+            if (arrayType.elementType() instanceof DoubleType) {
+                List<?> arrayList = JavaConverters.asJavaList(value); // Convert WrappedArray to List
+                List<BigDecimal> convertedList = new ArrayList<>();
+                for (Object element : arrayList) {
+                    if (element instanceof Double) {
+                        BigDecimal bigDecimalElement = BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP);
+                        convertedList.add(bigDecimalElement);
+                    } else {
+                        convertedList.add((BigDecimal) element); // If already converted, retain as BigDecimal
+                    }
                 }
-
-                updatedValues[i] = bigDecimalValue;
-            } else if (originalField.dataType() instanceof StructType) {
-                // Handle nested Row structures
-                updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
-            } else if (originalField.dataType() instanceof ArrayType) {
-                // Handle ArrayType
-                ArrayType arrayType = (ArrayType) originalField.dataType();
-                if (arrayType.elementType() instanceof DoubleType) {
-                    updatedValues[i] = ((List<?>) value).stream()
-                        .map(element -> BigDecimal.valueOf((Double) element).setScale(scale, BigDecimal.ROUND_HALF_UP))
-                        .toList();
-                } else if (arrayType.elementType() instanceof StructType) {
-                    updatedValues[i] = ((List<Row>) value).stream()
-                        .map(element -> convertRow(element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale))
-                        .toList();
-                } else {
-                    updatedValues[i] = value; // Keep other ArrayType elements unchanged
+                updatedValues[i] = convertedList;
+            } else if (arrayType.elementType() instanceof StructType) {
+                List<Row> arrayList = JavaConverters.asJavaList(value); // Convert WrappedArray to List
+                List<Row> convertedList = new ArrayList<>();
+                for (Row element : arrayList) {
+                    convertedList.add(convertRow(element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
                 }
+                updatedValues[i] = convertedList;
             } else {
-                // Keep other values unchanged
+                // Keep other ArrayType elements unchanged
                 updatedValues[i] = value;
             }
-        }
-
-        return RowFactory.create(updatedValues);
-    }
-
-    /**
-     * Gets the currency code from the row, defaulting to USD if not found.
-     *
-     * @param row The row containing the currency code.
-     * @return The currency code as a 3-character string.
-     */
-    private static String getCurrencyCode(Row row) {
-        try {
-            Row header = row.getAs("header"); // Adjust field name as per your dataset
-            return header.getAs("currencyCode");
-        } catch (Exception e) {
-            return "USD"; // Default currency code
+        } else {
+            // Keep other values unchanged
+            updatedValues[i] = value;
         }
     }
 
-    /**
-     * Gets the decimal places for a given currency code using the Java Currency class.
-     *
-     * @param currencyCode The 3-character ISO currency code.
-     * @return The number of decimal places for the currency.
-     */
-    private static int getCurrencyDecimalPlaces(String currencyCode) {
-        try {
-            Currency currency = Currency.getInstance(currencyCode);
-            return currency.getDefaultFractionDigits();
-        } catch (IllegalArgumentException e) {
-            return 2; // Default to 2 decimal places if the currency code is invalid
-        }
-    }
-
-    /**
-     * Enum representing fields that require currency-based logic.
-     */
-    public enum AmountFields {
-        FIELD1, FIELD2, FIELD3; // Replace with actual field names
-
-        /**
-         * Checks if a field name matches the enum or is prefixed with F_ and matches the enum.
-         *
-         * @param fieldName The field name to check.
-         * @return True if the field matches the enum, otherwise false.
-         */
-        public static boolean matches(String fieldName) {
-            for (AmountFields field : AmountFields.values()) {
-                if (field.name().equalsIgnoreCase(fieldName) || (fieldName.startsWith("F_") && fieldName.substring(2).equalsIgnoreCase(field.name()))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-    }
-}
-
-/**
- * Enum representing fields that require currency-based logic.
- */
-public enum AmountFields {
-    FIELD1, FIELD2, FIELD3; // Replace with actual field names
-
-    /**
-     * Checks if a field name matches the enum or has an underscore with the right-hand part matching the enum.
-     *
-     * @param fieldName The field name to check.
-     * @return True if the field matches the enum or the right side of an underscore matches, otherwise false.
-     */
-    public static boolean matches(String fieldName) {
-        for (AmountFields field : AmountFields.values()) {
-            String enumName = field.name();
-            // Match exact field name or the part after the last underscore
-            if (fieldName.equalsIgnoreCase(enumName) || 
-                (fieldName.contains("_") && fieldName.substring(fieldName.lastIndexOf("_") + 1).equalsIgnoreCase(enumName))) {
-                return true;
-            }
-        }
-        return false;
-    }
+    return RowFactory.create(updatedValues);
 }

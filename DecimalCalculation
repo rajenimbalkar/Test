@@ -1,64 +1,43 @@
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Encoders;
 import org.apache.spark.sql.types.*;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Currency;
 import java.util.List;
 
 public class DatasetConverter {
 
     /**
-     * Converts all `Long` datatype fields in a dataset to `BigDecimal` with the specified precision and scale.
+     * Converts all `Long` datatype fields in a dataset where each row is an array type into `BigDecimal`
+     * and applies currency-based formatting for matched fields.
      *
      * @param dataset   The input dataset.
      * @param precision The precision of the `BigDecimal`.
      * @param scale     The scale of the `BigDecimal`.
-     * @return Updated dataset with `Long` fields converted to `BigDecimal`.
+     * @return Updated dataset with `Long` fields converted to `BigDecimal` and formatted per currency.
      */
-    public static Dataset<Row> convertLongToBigDecimal(Dataset<Row> dataset, int precision, int scale) {
-        StructType schema = dataset.schema();
+    public static Dataset<Row> convertArrayRowsWithCurrencyLogic(Dataset<Row> dataset, int precision, int scale) {
+        return dataset.map(row -> {
+            List<Object> updatedRowArray = new ArrayList<>();
 
-        return dataset.map(row -> convertRow(row, schema, precision, scale), Encoders.bean(Row.class));
-    }
+            // Extract the currency code from the header
+            Row header = (Row) row.getAs("header"); // Adjust field name as necessary
+            String currencyCode = header != null ? header.getAs("currencyCode") : "USD"; // Default to USD if missing
 
-    /**
-     * Recursively converts all `Long` fields in a row (including nested fields) to `BigDecimal`.
-     *
-     * @param row       The current row being processed.
-     * @param schema    The schema of the row.
-     * @param precision The precision of the `BigDecimal`.
-     * @param scale     The scale of the `BigDecimal`.
-     * @return A new row with updated fields.
-     */
-    private static Row convertRow(Row row, StructType schema, int precision, int scale) {
-        List<Object> updatedValues = new ArrayList<>();
+            // Process each element of the row array
+            for (int i = 0; i < row.size(); i++) {
+                Object element = row.get(i);
 
-        for (int i = 0; i < schema.fields().length; i++) {
-            StructField field = schema.fields()[i];
-            Object value = row.get(i);
-
-            if (value instanceof Long) {
-                // Convert Long to BigDecimal with specified precision and scale
-                BigDecimal bigDecimalValue = BigDecimal.valueOf((Long) value).setScale(scale, BigDecimal.ROUND_HALF_UP);
-                updatedValues.add(bigDecimalValue);
-            } else if (value instanceof Row) {
-                // Handle nested Row objects (e.g., header or trailer)
-                updatedValues.add(convertRow((Row) value, (StructType) field.dataType(), precision, scale));
-            } else if (value instanceof List) {
-                // Handle array of Rows (e.g., data array)
-                List<Row> nestedRows = (List<Row>) value;
-                List<Row> updatedRows = new ArrayList<>();
-                for (Row nestedRow : nestedRows) {
-                    updatedRows.add(convertRow(nestedRow, (StructType) field.dataType(), precision, scale));
-                }
-                updatedValues.add(updatedRows);
-            } else {
-                // Keep the original value for other data types
-                updatedValues.add(value);
-            }
-        }
-
-        // Construct a new Row with the updated values
-        return new GenericRowWithSchema(updatedValues.toArray(), schema);
-    }
-}
+                if (element instanceof Row) {
+                    // If the element is a Row (e.g., header or trailer), process it recursively
+                    StructType elementSchema = (StructType) ((Row) element).schema();
+                    updatedRowArray.add(convertRow((Row) element, elementSchema, precision, scale, currencyCode));
+                } else if (element instanceof List) {
+                    // If the element is a list (e.g., array of data rows), process each Row in the list
+                    List<Row> dataArray = (List<Row>) element;
+                    List<Row> updatedDataArray = new ArrayList<>();
+                    for (Row dataRow : dataArray) {
+                        StructType dataSchema = (StructType) dataRow.schema();
+                        updatedDataArray.add(convertRow(dataRow, dataSchema, precision, scale, currencyC

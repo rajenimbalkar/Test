@@ -22,17 +22,16 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
             // Handle nested Row structures
             updatedValues[i] = convertRow((Row) value, (StructType) originalField.dataType(), (StructType) updatedField.dataType(), precision, scale);
         } else if (originalField.dataType() instanceof ArrayType) {
-            // Handle ArrayType: Convert Scala WrappedArray to Java List
+            // Handle ArrayType: Convert WrappedArray to Java List
             ArrayType arrayType = (ArrayType) originalField.dataType();
             if (arrayType.elementType() instanceof DoubleType) {
                 // Convert Scala WrappedArray to a Java List
                 List<Object> arrayList = new ArrayList<>();
                 if (value != null) {
-                    // Convert the array to a Java list
-                    for (Object element : ((scala.collection.mutable.WrappedArray<Object>) value).toArray()) {
-                        if (element != null) {
-                            arrayList.add(element);
-                        }
+                    // Convert WrappedArray to a Java List
+                    scala.collection.immutable.List<Object> scalaList = ((scala.collection.mutable.WrappedArray<Object>) value).toList();
+                    for (Object element : scalaList) {
+                        arrayList.add(element);
                     }
                 }
 
@@ -50,7 +49,8 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
                 // Convert list of Rows to a list of converted Rows
                 List<Row> arrayList = new ArrayList<>();
                 if (value != null) {
-                    for (Object element : ((scala.collection.mutable.WrappedArray<Object>) value).toArray()) {
+                    scala.collection.immutable.List<Object> scalaList = ((scala.collection.mutable.WrappedArray<Object>) value).toList();
+                    for (Object element : scalaList) {
                         if (element != null) {
                             arrayList.add(convertRow((Row) element, (StructType) arrayType.elementType(), (StructType) ((ArrayType) updatedField.dataType()).elementType(), precision, scale));
                         }

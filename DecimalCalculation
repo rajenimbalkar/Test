@@ -9,6 +9,7 @@ import java.util.stream.Stream;
 
 public class CurrencyDecimalConverter {
 
+    // Method to process dataset rows
     public static Dataset<Row> updateCurrencyDecimalPlaces(
             Dataset<Row> dataset,
             String currencyCodeField,
@@ -66,6 +67,7 @@ public class CurrencyDecimalConverter {
         return dataset.drop("currencyDecimalPlaces");
     }
 
+    // Handle nested structures
     private static Dataset<Row> updateNestedStruct(
             Dataset<Row> dataset,
             String structFieldName,
@@ -104,11 +106,17 @@ public class CurrencyDecimalConverter {
         return dataset;
     }
 
+    // Check if a field name matches with an enum field
     private static boolean isEnumFieldNameMatching(String fieldName, Set<String> enumFieldNames) {
+        // Check for both the original field name and the prefixed version
+        String prefixedFieldName = "F_" + fieldName;
+        String unprefixedFieldName = fieldName.startsWith("F_") ? fieldName.substring(2) : fieldName;
         return enumFieldNames.contains(fieldName) ||
-                enumFieldNames.contains(fieldName.startsWith("F_") ? fieldName.substring(2) : "F_" + fieldName);
+               enumFieldNames.contains(prefixedFieldName) ||
+               enumFieldNames.contains(unprefixedFieldName);
     }
 
+    // Get currency decimal places using Java Currency class
     private static int getCurrencyDecimalPlaces(String currencyCode) {
         try {
             return java.util.Currency.getInstance(currencyCode).getDefaultFractionDigits();
@@ -118,11 +126,13 @@ public class CurrencyDecimalConverter {
         }
     }
 
+    // Convert a double to BigDecimal with a default scale
     private static BigDecimal convertToBigDecimal(Double value) {
         if (value == null) return null;
         return BigDecimal.valueOf(value).setScale(2, BigDecimal.ROUND_HALF_UP);
     }
 
+    // Convert a double to BigDecimal with currency-specific decimal places
     private static BigDecimal convertToBigDecimalWithCurrency(Double value, Integer decimalPlaces) {
         if (value == null || decimalPlaces == null) return null;
         return BigDecimal.valueOf(value).movePointLeft(decimalPlaces).setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);

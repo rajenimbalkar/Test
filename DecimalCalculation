@@ -1,6 +1,7 @@
 import scala.collection.JavaConverters;
 import scala.collection.mutable.WrappedArray;
 import java.util.List;
+import java.util.ArrayList;
 
 private static Row convertRow(Row row, StructType originalSchema, StructType updatedSchema, int precision, int scale) {
     Object[] updatedValues = new Object[originalSchema.fields().length];
@@ -47,7 +48,8 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
                         convertedList.add((BigDecimal) element); // If already converted, retain as BigDecimal
                     }
                 }
-                updatedValues[i] = convertedList;
+                // Convert the Java List to a Scala WrappedArray for compatibility with Spark
+                updatedValues[i] = WrappedArray.make(convertedList.toArray(new BigDecimal[0]));
             } else if (arrayType.elementType() instanceof StructType) {
                 // Convert list of Rows to a list of converted Rows
                 List<Row> arrayList = new ArrayList<>();
@@ -59,7 +61,8 @@ private static Row convertRow(Row row, StructType originalSchema, StructType upd
                         }
                     }
                 }
-                updatedValues[i] = arrayList;
+                // Convert the list of Rows to a Scala WrappedArray
+                updatedValues[i] = WrappedArray.make(arrayList.toArray(new Row[0]));
             } else {
                 // Keep other ArrayType elements unchanged
                 updatedValues[i] = value;

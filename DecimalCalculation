@@ -1,127 +1,130 @@
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.Column;
 import org.apache.spark.sql.functions;
 import org.apache.spark.sql.types.*;
-import org.apache.spark.sql.SparkSession;
+import java.math.BigDecimal;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import java.util.Currency;
-import java.util.EnumSet;
+public class CurrencyDecimalConverter {
 
-public class DatasetFieldProcessor {
+    public static Dataset<Row> updateCurrencyDecimalPlaces(
+            Dataset<Row> dataset,
+            String currencyCodeField,
+            Set<String> enumFieldNames) {
 
-    public static Dataset<Row> processDataset(
-        SparkSession spark,
-        Dataset<Row> dataset,
-        int precision,
-        int scale,
-        String currencyCodeField,
-        Enum<?>[] fieldEnum) {
+        // UDF to determine the decimal places for a currency
+        dataset = dataset.withColumn(
+                "currencyDecimalPlaces",
+                functions.udf((String currencyCode) -> getCurrencyDecimalPlaces(currencyCode), DataTypes.IntegerType)
+                        .apply(functions.col(currencyCodeField))
+        );
 
-        // Register the UDF for currency fraction digits if not already done
-        registerCurrencyFractionDigitsUDF(spark);
-
+        // Process each row in the dataset
         StructType schema = dataset.schema();
-        Column extractedCurrencyCode = functions.col("header." + currencyCodeField);
-
         for (StructField field : schema.fields()) {
             String fieldName = field.name();
             DataType fieldType = field.dataType();
 
-            // Check if the field exists in the enum with or without the prefix "F_"
-            String fieldNameWithoutPrefix = fieldName.startsWith("F_") ? fieldName.substring(2) : fieldName;
-            boolean isFieldInEnum = false;
-            for (Enum<?> enumField : fieldEnum) {
-                if (enumField.name().equalsIgnoreCase(fieldNameWithoutPrefix)) {
-                    isFieldInEnum = true;
-                    break;
+            if (fieldType instanceof StructType) {
+                // Handle nested structs recursively
+                dataset = updateNestedStruct(dataset, fieldName, enumFieldNames, currencyCodeField);
+            } else if (fieldType instanceof ArrayType) {
+                // Handle arrays of data recursively
+                dataset = dataset.withColumn(
+                        fieldName,
+                        functions.expr("transform(" + fieldName + ", x -> convertArrayField(x, currencyDecimalPlaces))")
+                );
+            } else if (fieldType == DoubleType.apply()) {
+                // Check if the field matches enum and apply logic accordingly
+                if (isEnumFieldNameMatching(fieldName, enumFieldNames)) {
+                    dataset = dataset.withColumn(
+                            fieldName,
+                            functions.when(
+                                    functions.col(fieldName).isNotNull(),
+                                    functions.udf((Double value, Integer decimalPlaces) ->
+                                                    convertToBigDecimalWithCurrency(value, decimalPlaces),
+                                            DataTypes.createDecimalType()
+                                    ).apply(functions.col(fieldName), functions.col("currencyDecimalPlaces"))
+                            ).otherwise(functions.col(fieldName))
+                    );
+                } else {
+                    // Convert non-enum double fields to BigDecimal
+                    dataset = dataset.withColumn(
+                            fieldName,
+                            functions.udf((Double value) ->
+                                            convertToBigDecimal(value),
+                                    DataTypes.createDecimalType()
+                            ).apply(functions.col(fieldName))
+                    );
                 }
             }
+        }
 
-            if (isFieldInEnum && fieldType.equals(DataTypes.DoubleType)) {
-                // Transform DoubleType fields if they match the enum and are of type Double
-                dataset = dataset.withColumn(
-                    fieldName,
-                    transformDoubleField(functions.col(fieldName), precision, scale, extractedCurrencyCode)
-                );
-            } else if (fieldType instanceof StructType) {
-                // Recursively transform StructType fields
-                dataset = dataset.withColumn(
-                    fieldName,
-                    transformNestedStruct(functions.col(fieldName), (StructType) fieldType, precision, scale, extractedCurrencyCode)
-                );
-            } else if (fieldType instanceof ArrayType) {
-                // Transform ArrayType fields
-                dataset = dataset.withColumn(
-                    fieldName,
-                    transformArrayField(functions.col(fieldName), (ArrayType) fieldType, precision, scale, extractedCurrencyCode)
-                );
+        // Drop the temporary "currencyDecimalPlaces" column
+        return dataset.drop("currencyDecimalPlaces");
+    }
+
+    private static Dataset<Row> updateNestedStruct(
+            Dataset<Row> dataset,
+            String structFieldName,
+            Set<String> enumFieldNames,
+            String currencyCodeField) {
+        StructType structType = (StructType) dataset.schema().apply(structFieldName).dataType();
+
+        for (StructField field : structType.fields()) {
+            String nestedFieldName = structFieldName + "." + field.name();
+            DataType fieldType = field.dataType();
+
+            if (fieldType == DoubleType.apply()) {
+                if (isEnumFieldNameMatching(field.name(), enumFieldNames)) {
+                    dataset = dataset.withColumn(
+                            nestedFieldName,
+                            functions.when(
+                                    functions.col(nestedFieldName).isNotNull(),
+                                    functions.udf((Double value, Integer decimalPlaces) ->
+                                                    convertToBigDecimalWithCurrency(value, decimalPlaces),
+                                            DataTypes.createDecimalType()
+                                    ).apply(functions.col(nestedFieldName), functions.col("currencyDecimalPlaces"))
+                            ).otherwise(functions.col(nestedFieldName))
+                    );
+                } else {
+                    dataset = dataset.withColumn(
+                            nestedFieldName,
+                            functions.udf((Double value) ->
+                                            convertToBigDecimal(value),
+                                    DataTypes.createDecimalType()
+                            ).apply(functions.col(nestedFieldName))
+                    );
+                }
             }
         }
 
         return dataset;
     }
 
-    private static void registerCurrencyFractionDigitsUDF(SparkSession spark) {
-        // Register the UDF to return the number of fraction digits for a given currency code
-        spark.udf().register("currencyFractionDigits", (String currencyCode) -> {
-            if (currencyCode == null || currencyCode.isEmpty()) {
-                return 2; // Default to 2 decimal places if the currency code is invalid
-            }
-            try {
-                Currency currency = Currency.getInstance(currencyCode);
-                return currency.getDefaultFractionDigits();
-            } catch (IllegalArgumentException e) {
-                return 2; // Default to 2 decimal places for unknown currencies
-            }
-        }, org.apache.spark.sql.types.DataTypes.IntegerType);
+    private static boolean isEnumFieldNameMatching(String fieldName, Set<String> enumFieldNames) {
+        return enumFieldNames.contains(fieldName) ||
+                enumFieldNames.contains(fieldName.startsWith("F_") ? fieldName.substring(2) : "F_" + fieldName);
     }
 
-    private static Column transformDoubleField(Column column, int precision, int scale, Column currencyCodeColumn) {
-        // Use the UDF to get the number of fraction digits based on the currency code
-        Column fractionDigits = functions.callUDF("currencyFractionDigits", currencyCodeColumn);
-
-        // Transform the column to BigDecimal with specified precision and scale
-        return functions.expr(
-            "CAST(round(" + column + ", " + fractionDigits + ") AS DECIMAL(" + precision + ", " + scale + "))"
-        );
-    }
-
-    private static Column transformNestedStruct(
-        Column column, StructType structType, int precision, int scale, Column currencyCodeColumn) {
-
-        Column[] transformedFields = new Column[structType.fields().length];
-
-        for (int i = 0; i < structType.fields().length; i++) {
-            StructField field = structType.fields()[i];
-            String fieldName = field.name();
-            DataType fieldType = field.dataType();
-
-            if (fieldType.equals(DataTypes.DoubleType)) {
-                transformedFields[i] = transformDoubleField(column.getField(fieldName), precision, scale, currencyCodeColumn).alias(fieldName);
-            } else if (fieldType instanceof StructType) {
-                transformedFields[i] = transformNestedStruct(column.getField(fieldName), (StructType) fieldType, precision, scale, currencyCodeColumn).alias(fieldName);
-            } else if (fieldType instanceof ArrayType) {
-                transformedFields[i] = transformArrayField(column.getField(fieldName), (ArrayType) fieldType, precision, scale, currencyCodeColumn).alias(fieldName);
-            } else {
-                transformedFields[i] = column.getField(fieldName);
-            }
+    private static int getCurrencyDecimalPlaces(String currencyCode) {
+        try {
+            return java.util.Currency.getInstance(currencyCode).getDefaultFractionDigits();
+        } catch (IllegalArgumentException e) {
+            // Default to 2 decimal places if the currency code is invalid
+            return 2;
         }
-
-        return functions.struct(transformedFields);
     }
 
-    private static Column transformArrayField(
-        Column column, ArrayType arrayType, int precision, int scale, Column currencyCodeColumn) {
+    private static BigDecimal convertToBigDecimal(Double value) {
+        if (value == null) return null;
+        return BigDecimal.valueOf(value).setScale(2, BigDecimal.ROUND_HALF_UP);
+    }
 
-        DataType elementType = arrayType.elementType();
-
-        if (elementType.equals(DataTypes.DoubleType)) {
-            return functions.transform(column, element -> transformDoubleField(element, precision, scale, currencyCodeColumn));
-        } else if (elementType instanceof StructType) {
-            return functions.transform(column, element -> transformNestedStruct(element, (StructType) elementType, precision, scale, currencyCodeColumn));
-        }
-
-        return column; // Return as-is for other types
+    private static BigDecimal convertToBigDecimalWithCurrency(Double value, Integer decimalPlaces) {
+        if (value == null || decimalPlaces == null) return null;
+        return BigDecimal.valueOf(value).movePointLeft(decimalPlaces).setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
     }
 }

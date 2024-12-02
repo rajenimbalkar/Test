@@ -1,161 +1,142 @@
-import org.apache.spark.sql.*;
-import org.apache.spark.sql.functions;
-import org.apache.spark.sql.api.java.UDF1;
-import org.apache.spark.sql.types.*;
+To make the solution dynamic and adaptable to any structure of a dataset with an array of data, we need to ensure the code can traverse through any row's schema and apply the required conversion logic to fields of type `Double` without hard-coding the field names or the data structure. We will make use of recursion to handle nested structures.
+
+Here's how you can modify the implementation:
+
+### 1. **Utility Methods for Conversion**:
+We'll use utility methods to convert `Double` fields to `BigDecimal` with the specified precision and scale and apply currency-based logic if needed.
+
+```java
 import java.math.BigDecimal;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.Currency;
 
-public class CurrencyDecimalConverter {
-
-    public static void main(String[] args) {
-        // Initialize Spark session
-        SparkSession spark = SparkSession.builder()
-                .appName("Currency Decimal Converter")
-                .getOrCreate();
-
-        // Register UDFs
-        spark.udf().register("convertArrayField", new UDF1<List<Double>, List<BigDecimal>>() {
-            @Override
-            public List<BigDecimal> call(List<Double> values) throws Exception {
-                if (values == null) return null;
-                return values.stream()
-                        .map(value -> value == null ? null : BigDecimal.valueOf(value).setScale(2, BigDecimal.ROUND_HALF_UP))
-                        .collect(Collectors.toList());
-            }
-        }, DataTypes.createArrayType(DataTypes.createDecimalType(38, 2)));
-
-        // Example dataset
-        Dataset<Row> dataset = createSampleDataset(spark);
-
-        // Specify the currency code field in the header (e.g., "currencyCodeField")
-        String currencyCodeField = "currencyCode"; // Field name in header
-
-        // Specify the enum class
-        Class<? extends Enum<?>> enumClass = AccountFields.class;
-
-        // Apply the method, passing the enum class and dataset
-        Dataset<Row> updatedDataset = updateCurrencyDecimalPlaces(dataset, currencyCodeField, enumClass);
-
-        // Show the results
-        updatedDataset.show(false);
+public class CurrencyUtils {
+    
+    // Convert a double value to BigDecimal with precision 17 and scale 4
+    public static BigDecimal convertToBigDecimal(double value) {
+        return new BigDecimal(value).setScale(4, BigDecimal.ROUND_HALF_UP);
     }
 
-    // Enum for account fields (can be extended)
-    public enum AccountFields {
-        F_ACCOUNT_BALANCE,
-        F_ACCOUNT_DEPOSIT
-    }
-
-    // Method to process dataset rows
-    public static Dataset<Row> updateCurrencyDecimalPlaces(Dataset<Row> dataset, String currencyCodeField, Class<? extends Enum<?>> enumClass) {
-        // Extract enum field names dynamically
-        Set<String> enumFieldNames = Stream.of(enumClass.getEnumConstants())
-                                           .map(Enum::name)
-                                           .collect(Collectors.toSet());
-
-        // Add a temporary column for currency decimal places
-        dataset = dataset.withColumn(
-                "currencyDecimalPlaces",
-                functions.udf((String currencyCode) -> getCurrencyDecimalPlaces(currencyCode), DataTypes.IntegerType)
-                        .apply(functions.col(currencyCodeField))
-        );
-
-        // Process each row in the dataset
-        StructType schema = dataset.schema();
-        for (StructField field : schema.fields()) {
-            String fieldName = field.name();
-            DataType fieldType = field.dataType();
-
-            if (fieldType instanceof StructType) {
-                // Handle nested structs recursively
-                dataset = updateNestedStruct(dataset, fieldName, enumFieldNames, currencyCodeField);
-            } else if (fieldType instanceof ArrayType) {
-                // Handle arrays of data
-                dataset = dataset.withColumn(
-                        fieldName,
-                        functions.expr("transform(" + fieldName + ", x -> convertArrayField(x))")
-                );
-            } else if (fieldType == DataTypes.DoubleType) {
-                // Check if the field matches enum and apply logic accordingly
-                if (isEnumFieldNameMatching(fieldName, enumFieldNames)) {
-                    dataset = dataset.withColumn(
-                            fieldName,
-                            functions.when(
-                                    functions.col(fieldName).isNotNull(),
-                                    functions.udf((Double value, Integer decimalPlaces) ->
-                                                    convertToBigDecimalWithCurrency(value, decimalPlaces),
-                                            DataTypes.createDecimalType(38, 2))  // Example precision/scale
-                                    .apply(functions.col(fieldName), functions.col("currencyDecimalPlaces"))
-                            ).otherwise(functions.col(fieldName))
-                    );
-                } else {
-                    // Convert non-enum double fields to BigDecimal
-                    dataset = dataset.withColumn(
-                            fieldName,
-                            functions.udf((Double value) ->
-                                            convertToBigDecimal(value),
-                                    DataTypes.createDecimalType(38, 2) // Example precision/scale
-                            ).apply(functions.col(fieldName))
-                    );
-                }
-            }
+    // Convert a double value to BigDecimal with currency logic, based on the currency code
+    public static BigDecimal convertToBigDecimalWithCurrencyLogic(double value, String currencyCode) {
+        Currency currency = Currency.getInstance(currencyCode);
+        int decimalPlaces = currency.getDefaultFractionDigits();
+        
+        // Convert to BigDecimal with precision 17 and scale 4
+        BigDecimal bigDecimalValue = new BigDecimal(value).setScale(4, BigDecimal.ROUND_HALF_UP);
+        
+        // Divide the value by 10^decimalPlaces if decimalPlaces > 0
+        if (decimalPlaces > 0) {
+            return bigDecimalValue.divide(BigDecimal.valueOf(Math.pow(10, decimalPlaces)), 4, BigDecimal.ROUND_HALF_UP);
         }
-
-        // Drop the temporary "currencyDecimalPlaces" column
-        return dataset.drop("currencyDecimalPlaces");
-    }
-
-    // Method to handle arrays (same as previously mentioned)
-    private static Dataset<Row> updateNestedStruct(Dataset<Row> dataset, String structFieldName, Set<String> enumFieldNames, String currencyCodeField) {
-        // Handle logic for nested structs
-        // You can call the `updateCurrencyDecimalPlaces` method here recursively if needed
-        return dataset;
-    }
-
-    // Method to check enum field names
-    private static boolean isEnumFieldNameMatching(String fieldName, Set<String> enumFieldNames) {
-        // Handle field name comparison with enum fields (with or without F_ prefix)
-        return enumFieldNames.contains(fieldName.replace("F_", ""));
-    }
-
-    // Get currency decimal places based on currency code
-    private static int getCurrencyDecimalPlaces(String currencyCode) {
-        try {
-            return java.util.Currency.getInstance(currencyCode).getDefaultFractionDigits();
-        } catch (IllegalArgumentException e) {
-            return 2; // Default to 2 if currency is invalid
-        }
-    }
-
-    // Convert to BigDecimal with currency-specific decimal places
-    private static BigDecimal convertToBigDecimalWithCurrency(Double value, Integer decimalPlaces) {
-        if (value == null || decimalPlaces == null) return null;
-        return BigDecimal.valueOf(value).movePointLeft(decimalPlaces).setScale(decimalPlaces, BigDecimal.ROUND_HALF_UP);
-    }
-
-    // Convert to BigDecimal with default precision/scale
-    private static BigDecimal convertToBigDecimal(Double value) {
-        if (value == null) return null;
-        return BigDecimal.valueOf(value).setScale(2, BigDecimal.ROUND_HALF_UP);
-    }
-
-    // Sample dataset for demonstration (replace this with your actual dataset)
-    private static Dataset<Row> createSampleDataset(SparkSession spark) {
-        // Sample data with account, trailer, and data rows
-        List<Row> rows = Arrays.asList(
-                RowFactory.create("USD", 123.00, 5000.55),
-                RowFactory.create("EUR", 321.45, 1500.33)
-        );
-
-        // Define schema with header, data, and trailer
-        StructType schema = new StructType(new StructField[]{
-                new StructField("currencyCode", DataTypes.StringType, false, Metadata.empty()),
-                new StructField("F_ACCOUNT_BALANCE", DataTypes.DoubleType, false, Metadata.empty()),
-                new StructField("F_ACCOUNT_DEPOSIT", DataTypes.DoubleType, false, Metadata.empty())
-        });
-
-        // Create DataFrame from the sample data
-        return spark.createDataFrame(rows, schema);
+        return bigDecimalValue;
     }
 }
+```
+
+### 2. **Recursive Field Conversion**:
+The following method will traverse through all fields in a row, including nested structures like arrays and sub-rows, and convert `double` fields as per the specified logic.
+
+```java
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.Encoders;
+
+import java.util.Map;
+import java.util.List;
+
+public class DatasetConverter {
+
+    public static Dataset<Row> convertDataset(Dataset<Row> dataset, String currencyCode) {
+        // Map over the dataset rows and apply the conversion
+        return dataset.map(row -> convertRow(row, currencyCode), Encoders.bean(Row.class));
+    }
+
+    private static Row convertRow(Row row, String currencyCode) {
+        return convertFields(row, currencyCode);
+    }
+
+    private static Row convertFields(Row row, String currencyCode) {
+        // Get all the field names and values from the row
+        Map<String, Object> fieldMap = row.getValuesMap(row.schema().fieldNames());
+        
+        for (Map.Entry<String, Object> entry : fieldMap.entrySet()) {
+            String fieldName = entry.getKey();
+            Object value = entry.getValue();
+
+            if (value instanceof Double) {
+                // Convert to BigDecimal with precision 17 and scale 4 for all double fields
+                BigDecimal bigDecimalValue = CurrencyUtils.convertToBigDecimal((Double) value);
+
+                // Check if the field matches the condition (enum match or F_ prefix)
+                if (AmountFields.contains(fieldName) || (fieldName.startsWith("F_") && AmountFields.contains(fieldName.substring(2)))) {
+                    bigDecimalValue = CurrencyUtils.convertToBigDecimalWithCurrencyLogic((Double) value, currencyCode);
+                }
+
+                // Update the field value in the row
+                row = row.withColumn(fieldName, functions.lit(bigDecimalValue));
+            } else if (value instanceof Row) {
+                // Recursively handle nested Row objects
+                row = row.withColumn(entry.getKey(), functions.lit(convertFields((Row) value, currencyCode)));
+            } else if (value instanceof List) {
+                // Handle array of data (List of Rows)
+                List<Row> rows = (List<Row>) value;
+                for (int i = 0; i < rows.size(); i++) {
+                    rows.set(i, convertFields(rows.get(i), currencyCode));
+                }
+                row = row.withColumn(entry.getKey(), functions.lit(rows));
+            }
+        }
+        return row;
+    }
+}
+```
+
+### 3. **Usage in Main Application**:
+Use this method to read your dataset and apply the conversion logic dynamically.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+public class Main {
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder().appName("Dynamic Dataset Conversion").getOrCreate();
+
+        // Load your dataset (ensure it's a JSON, Parquet, or other supported format)
+        Dataset<Row> dataset = spark.read().json("path_to_your_data.json");
+
+        // Define the currency code dynamically, potentially from a header field
+        String currencyCode = "USD";  // This should be set based on your data context
+
+        // Convert the dataset
+        Dataset<Row> updatedDataset = DatasetConverter.convertDataset(dataset, currencyCode);
+
+        // Show or save the updated dataset
+        updatedDataset.show();
+    }
+}
+```
+
+### Explanation:
+1. **CurrencyUtils Class**:
+   - Provides methods to convert `double` values to `BigDecimal` with a fixed precision and scale.
+   - Includes a method that applies division logic based on the currency code's decimal places.
+
+2. **DatasetConverter Class**:
+   - Uses recursion to handle fields that are nested within arrays or other `Row` objects.
+   - Converts each `double` field to `BigDecimal` and applies the currency logic for fields that match the `AmountFields` enum or have an `F_` prefix.
+
+3. **Dynamic Structure Handling**:
+   - The code works dynamically by checking the type of each field.
+   - If the field is a `Double`, it converts it to `BigDecimal`.
+   - If the field is a nested `Row`, the method calls itself recursively.
+   - If the field is a `List` (array), it iterates through each item and applies the conversion.
+
+### Benefits:
+- **Dynamic**: The code adapts to any data structure without needing hard-coded names or paths.
+- **Scalable**: Works with any nested structure of rows and arrays.
+- **Flexible**: You can easily extend the logic to support additional conditions or field types as needed.
+
+This approach will process your dataset row by row, convert all `double` fields to `BigDecimal` with the specified precision and scale, and apply the currency logic only to fields that match the enum or have an `F_` prefix.

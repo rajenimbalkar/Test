@@ -1,54 +1,28 @@
-To fetch the currency code from the header for each row in the dataset, we need to modify the `convertDataset` method to extract the currency code dynamically from the header for each row. This can be achieved by ensuring that the `convertFields` method can access and use the currency code from the header field.
-
-### Updated Implementation:
-1. **Assume the header is a `Row` field with a field name like `"header"` or similar**.
-2. **Extract the currency code from the header field** and pass it to the `convertFields` method.
-
-### Updated Code:
-
-```java
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.functions;
-import org.apache.spark.sql.Encoders;
+import scala.collection.JavaConverters;
 
-import java.util.Map;
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 public class DatasetConverter {
 
-    public static Dataset<Row> convertDataset(Dataset<Row> dataset) {
-        // Map over the dataset rows and apply the conversion
-        return dataset.map(row -> {
-            // Extract the currency code from the header field
-            Row header = (Row) row.getAs("header");  // Replace "header" with the actual field name if different
-            String currencyCode = getCurrencyCodeFromHeader(header);
-            return convertRow(row, currencyCode);
-        }, Encoders.bean(Row.class));
-    }
-
-    private static String getCurrencyCodeFromHeader(Row header) {
-        // Replace "currencyCodeField" with the actual field name that holds the currency code in the header
-        return header != null ? header.getAs("currencyCodeField") : "USD";  // Fallback value if the field is null
-    }
-
-    private static Row convertRow(Row row, String currencyCode) {
-        return convertFields(row, currencyCode);
-    }
-
+    // Main recursive function to convert fields
     private static Row convertFields(Row row, String currencyCode) {
-        // Get all the field names and values from the row
-        Map<String, Object> fieldMap = row.getValuesMap(row.schema().fieldNames());
-        
-        for (Map.Entry<String, Object> entry : fieldMap.entrySet()) {
-            String fieldName = entry.getKey();
-            Object value = entry.getValue();
+        // Convert field names (String[]) to List<String> or Seq<String> for compatibility
+        String[] fieldNames = row.schema().fieldNames();
 
+        // Iterate over each field
+        for (String fieldName : fieldNames) {
+            // Get the value of the current field dynamically
+            Object value = row.getAs(fieldName);
+
+            // If the value is of type Double, convert to BigDecimal
             if (value instanceof Double) {
-                // Convert to BigDecimal with precision 17 and scale 4 for all double fields
                 BigDecimal bigDecimalValue = CurrencyUtils.convertToBigDecimal((Double) value);
 
-                // Check if the field matches the condition (enum match or F_ prefix)
+                // Apply currency logic if the field matches the condition
                 if (AmountFields.contains(fieldName) || (fieldName.startsWith("F_") && AmountFields.contains(fieldName.substring(2)))) {
                     bigDecimalValue = CurrencyUtils.convertToBigDecimalWithCurrencyLogic((Double) value, currencyCode);
                 }
@@ -56,64 +30,17 @@ public class DatasetConverter {
                 // Update the field value in the row
                 row = row.withColumn(fieldName, functions.lit(bigDecimalValue));
             } else if (value instanceof Row) {
-                // Recursively handle nested Row objects
-                row = row.withColumn(entry.getKey(), functions.lit(convertFields((Row) value, currencyCode)));
+                // If the value is a nested Row, recurse into it
+                row = row.withColumn(fieldName, functions.lit(convertFields((Row) value, currencyCode)));
             } else if (value instanceof List) {
-                // Handle array of data (List of Rows)
+                // If the value is an array (List of Rows), process each row in the list
                 List<Row> rows = (List<Row>) value;
                 for (int i = 0; i < rows.size(); i++) {
                     rows.set(i, convertFields(rows.get(i), currencyCode));
                 }
-                row = row.withColumn(entry.getKey(), functions.lit(rows));
+                row = row.withColumn(fieldName, functions.lit(rows));
             }
         }
         return row;
     }
 }
-```
-
-### Explanation:
-1. **`getCurrencyCodeFromHeader` Method**:
-   - This method extracts the currency code from the header field of a row.
-   - Replace `"currencyCodeField"` with the actual name of the field in the header that holds the currency code.
-
-2. **`convertDataset` Method**:
-   - Calls `getCurrencyCodeFromHeader` to get the currency code for each row.
-   - Passes the currency code to `convertRow` and `convertFields` for each row's processing.
-
-3. **Handling Nested Structures**:
-   - The `convertFields` method uses recursion to handle nested `Row` objects and arrays.
-   - The array processing iterates over each `Row` in the list, converting its fields and applying the currency logic as necessary.
-
-### Usage in Main Application:
-```java
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SparkSession;
-
-public class Main {
-    public static void main(String[] args) {
-        SparkSession spark = SparkSession.builder().appName("Dynamic Dataset Conversion").getOrCreate();
-
-        // Load your dataset (ensure it's a JSON, Parquet, or other supported format)
-        Dataset<Row> dataset = spark.read().json("path_to_your_data.json");
-
-        // Convert the dataset with dynamic currency code extraction
-        Dataset<Row> updatedDataset = DatasetConverter.convertDataset(dataset);
-
-        // Show or save the updated dataset
-        updatedDataset.show();
-    }
-}
-```
-
-### Key Points:
-- **Dynamic Currency Code**: The `currencyCode` is dynamically fetched from the header field for each row.
-- **Recursive Field Conversion**: The code handles nested `Row` objects and lists, ensuring all `double` fields are processed and converted.
-- **Precision and Scale**: All `double` values are converted to `BigDecimal` with precision `17` and scale `4`, while currency logic is applied selectively.
-
-### Customization:
-- **Field Names**: Ensure that `currencyCodeField` matches the actual field name in your header that holds the currency code.
-- **Error Handling**: You might want to add error handling or logging if the currency code field is missing or invalid.
-
-This solution ensures that the currency code extraction and field conversion are done dynamically for each row, supporting various row structures in your dataset.

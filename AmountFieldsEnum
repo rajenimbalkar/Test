@@ -1,0 +1,36 @@
+import java.util.HashMap;
+import java.util.Map;
+
+public enum AmountFields {
+    FIELD1("field1", "field1Signage"),
+    FIELD2("field2", "field2Signage"),
+    FIELD3("field3", "field3Signage");
+
+    private static final Map<String, AmountFields> fieldMap = new HashMap<>();
+
+    static {
+        for (AmountFields field : values()) {
+            fieldMap.put(field.getFieldName(), field);
+        }
+    }
+
+    private final String fieldName;
+    private final String signageFieldName;
+
+    AmountFields(String fieldName, String signageFieldName) {
+        this.fieldName = fieldName;
+        this.signageFieldName = signageFieldName;
+    }
+
+    public String getFieldName() {
+        return fieldName;
+    }
+
+    public String getSignageFieldName() {
+        return signageFieldName;
+    }
+
+    public static AmountFields match(String fieldName) {
+        return fieldMap.get(fieldName);
+    }
+}

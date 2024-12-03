@@ -1,0 +1,79 @@
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.api.java.UDF2;
+import org.apache.spark.sql.types.*;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class FilterWithoutExploding {
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("DirectFilterWithoutExploding")
+                .master("local[*]")
+                .getOrCreate();
+
+        // Define schema for the data array
+        StructType dataSchema = new StructType()
+                .add("accountNumber", DataTypes.StringType, false)
+                .add("referenceNumber", DataTypes.StringType, false);
+
+        // Sample dataset
+        List<Row> rows = Arrays.asList(
+                RowFactory.create("header1", "trailer1", Arrays.asList(
+                        RowFactory.create("123", "abc"),
+                        RowFactory.create("456", "def")
+                )),
+                RowFactory.create("header2", "trailer2", Arrays.asList(
+                        RowFactory.create("789", "xyz"),
+                        RowFactory.create("456", "def")
+                ))
+        );
+
+        StructType schema = new StructType()
+                .add("header", DataTypes.StringType, false)
+                .add("trailer", DataTypes.StringType, false)
+                .add("data", DataTypes.createArrayType(dataSchema));
+
+        Dataset<Row> dataset = spark.createDataFrame(rows, schema);
+
+        // Create a DataFrame for the filter list
+        List<Row> filterRows = Arrays.asList(
+                RowFactory.create("123", "abc"),
+                RowFactory.create("456", "def")
+        );
+
+        StructType filterSchema = new StructType()
+                .add("accountNumber", DataTypes.StringType, false)
+                .add("referenceNumber", DataTypes.StringType, false);
+
+        Dataset<Row> filterDF = spark.createDataFrame(filterRows, filterSchema);
+
+        // Collect the filter list into a Set for efficient lookup
+        Set<Row> filterSet = new HashSet<>(filterDF.collectAsList());
+
+        // Register a UDF to filter the data array
+        UDF2<List<Row>, Set<Row>, List<Row>> filterDataUDF = (data, filters) -> {
+            if (data == null) return Collections.emptyList();
+            return data.stream()
+                    .filter(row -> {
+                        String accountNumber = row.getString(0);
+                        String referenceNumber = row.getString(1);
+                        return !filters.contains(RowFactory.create(accountNumber, referenceNumber));
+                    })
+                    .collect(Collectors.toList());
+        };
+
+        spark.udf().register("filterDataUDF", filterDataUDF, DataTypes.createArrayType(dataSchema));
+
+        // Apply the UDF to filter the data
+        Dataset<Row> filteredDataset = dataset.withColumn(
+                "data",
+                functions.callUDF("filterDataUDF", dataset.col("data"), functions.lit(filterSet))
+        );
+
+        // Show the result
+        filteredDataset.show(false);
+
+        spark.stop();
+    }
+}

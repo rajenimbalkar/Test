@@ -1,0 +1,76 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.types.*;
+import scala.collection.JavaConverters;
+import scala.collection.mutable.WrappedArray;
+import java.util.List;
+import java.util.Map;
+import java.util.ArrayList;
+
+public class SparkRowFilter {
+
+    public static Dataset<Row> filterDataArray(Dataset<Row> dataset, List<Map<String, Object>> filterCriteria) {
+        // Create a filter expression for each map entry (account number and reference number)
+        StringBuilder filterExprBuilder = new StringBuilder();
+        for (Map<String, Object> criteria : filterCriteria) {
+            String accountNumber = (String) criteria.get("accountNumber");
+            String referenceNumber = (String) criteria.get("referenceNumber");
+
+            if (filterExprBuilder.length() > 0) {
+                filterExprBuilder.append(" OR ");
+            }
+            filterExprBuilder.append(
+                    "FILTER(data, row -> row.accountNumber != '" + accountNumber + "' " +
+                            "AND row.referenceNumber != '" + referenceNumber + "')"
+            );
+        }
+
+        // Apply the filter expression to the dataset
+        dataset = dataset.withColumn("filteredData", functions.expr("FILTER(data, row -> " + filterExprBuilder.toString() + ")"));
+
+        return dataset;
+    }
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("Filter Data Array Using List of Maps")
+                .getOrCreate();
+
+        // Define schema for your data
+        StructType headerSchema = new StructType()
+                .add("headerField1", StringType, true)
+                .add("headerField2", StringType, true);
+
+        StructType trailerSchema = new StructType()
+                .add("trailerField1", StringType, true)
+                .add("trailerField2", StringType, true);
+
+        StructType dataSchema = new StructType()
+                .add("accountNumber", StringType, true)
+                .add("referenceNumber", StringType, true)
+                .add("otherField", StringType, true);
+
+        StructType mainSchema = new StructType()
+                .add("header", headerSchema, true)
+                .add("trailer", trailerSchema, true)
+                .add("data", new ArrayType(dataSchema, true), true);
+
+        // Load your dataset (e.g., from a JSON file, CSV, etc.)
+        Dataset<Row> dataset = spark.read().schema(mainSchema).json("path/to/your/data.json");
+
+        // Create a list of maps with filter criteria
+        List<Map<String, Object>> filterCriteria = new ArrayList<>();
+        Map<String, Object> criteria1 = Map.of("accountNumber", "12345", "referenceNumber", "ref-67890");
+        Map<String, Object> criteria2 = Map.of("accountNumber", "54321", "referenceNumber", "ref-09876");
+        filterCriteria.add(criteria1);
+        filterCriteria.add(criteria2);
+
+        // Filter the dataset
+        Dataset<Row> filteredDataset = filterDataArray(dataset, filterCriteria);
+
+        // Show the filtered dataset
+        filteredDataset.show();
+    }
+}

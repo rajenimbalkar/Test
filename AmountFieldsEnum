@@ -30,7 +30,24 @@ public enum AmountFields {
         return signageFieldName;
     }
 
+    /**
+     * Matches a given field name, allowing for prefixes with an underscore.
+     * Extracts the portion after the last underscore and matches with the enum's field names.
+     *
+     * @param fieldName The field name to match.
+     * @return The corresponding AmountFields enum or null if no match is found.
+     */
     public static AmountFields match(String fieldName) {
-        return fieldMap.get(fieldName);
+        if (fieldName == null || fieldName.isEmpty()) {
+            return null;
+        }
+
+        // Extract the portion after the last underscore
+        String actualFieldName = fieldName.contains("_") 
+                ? fieldName.substring(fieldName.lastIndexOf("_") + 1) 
+                : fieldName;
+
+        // Match with the enum's field names
+        return fieldMap.get(actualFieldName);
     }
 }

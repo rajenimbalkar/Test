@@ -5,27 +5,28 @@ import org.apache.spark.sql.types.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class FilterWithoutExploding {
+public class FilterWithSpecificFields {
     public static void main(String[] args) {
         SparkSession spark = SparkSession.builder()
-                .appName("DirectFilterWithoutExploding")
+                .appName("FilterWithSpecificFields")
                 .master("local[*]")
                 .getOrCreate();
 
         // Define schema for the data array
         StructType dataSchema = new StructType()
                 .add("accountNumber", DataTypes.StringType, false)
-                .add("referenceNumber", DataTypes.StringType, false);
+                .add("referenceNumber", DataTypes.StringType, false)
+                .add("otherField", DataTypes.StringType, false); // Example of additional fields
 
         // Sample dataset
         List<Row> rows = Arrays.asList(
                 RowFactory.create("header1", "trailer1", Arrays.asList(
-                        RowFactory.create("123", "abc"),
-                        RowFactory.create("456", "def")
+                        RowFactory.create("123", "abc", "other1"),
+                        RowFactory.create("456", "def", "other2")
                 )),
                 RowFactory.create("header2", "trailer2", Arrays.asList(
-                        RowFactory.create("789", "xyz"),
-                        RowFactory.create("456", "def")
+                        RowFactory.create("789", "xyz", "other3"),
+                        RowFactory.create("456", "def", "other2")
                 ))
         );
 
@@ -36,29 +37,25 @@ public class FilterWithoutExploding {
 
         Dataset<Row> dataset = spark.createDataFrame(rows, schema);
 
-        // Create a DataFrame for the filter list
-        List<Row> filterRows = Arrays.asList(
-                RowFactory.create("123", "abc"),
-                RowFactory.create("456", "def")
+        // Define the filter list with accountNumber and referenceNumber
+        List<Map<String, Object>> filterList = Arrays.asList(
+                Map.of("accountNumber", "123", "referenceNumber", "abc"),
+                Map.of("accountNumber", "456", "referenceNumber", "def")
         );
 
-        StructType filterSchema = new StructType()
-                .add("accountNumber", DataTypes.StringType, false)
-                .add("referenceNumber", DataTypes.StringType, false);
-
-        Dataset<Row> filterDF = spark.createDataFrame(filterRows, filterSchema);
-
-        // Collect the filter list into a Set for efficient lookup
-        Set<Row> filterSet = new HashSet<>(filterDF.collectAsList());
+        // Extract only accountNumber and referenceNumber from filter list and store them in a Set
+        Set<Row> filterSet = filterList.stream()
+                .map(map -> RowFactory.create(map.get("accountNumber"), map.get("referenceNumber")))
+                .collect(Collectors.toSet());
 
         // Register a UDF to filter the data array
         UDF2<List<Row>, Set<Row>, List<Row>> filterDataUDF = (data, filters) -> {
             if (data == null) return Collections.emptyList();
             return data.stream()
                     .filter(row -> {
-                        String accountNumber = row.getString(0);
-                        String referenceNumber = row.getString(1);
-                        return !filters.contains(RowFactory.create(accountNumber, referenceNumber));
+                        // Check if accountNumber and referenceNumber match any filter entry
+                        Row key = RowFactory.create(row.getString(0), row.getString(1));
+                        return !filters.contains(key); // Keep rows that don't match
                     })
                     .collect(Collectors.toList());
         };

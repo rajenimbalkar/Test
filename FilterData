@@ -1,9 +1,8 @@
 import org.apache.spark.sql.*;
-import org.apache.spark.sql.api.java.UDF2;
+import org.apache.spark.sql.functions.*;
 import org.apache.spark.sql.types.*;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class FilterWithSpecificFields {
     public static void main(String[] args) {
@@ -43,33 +42,33 @@ public class FilterWithSpecificFields {
                 Map.of("accountNumber", "456", "referenceNumber", "def")
         );
 
-        // Register a UDF to filter the data array
-        UDF2<List<Row>, List<Map<String, Object>>, List<Row>> filterDataUDF = (data, filters) -> {
-            if (data == null) return Collections.emptyList();
-            Set<String> filterKeys = filters.stream()
-                    .map(f -> f.get("accountNumber") + "-" + f.get("referenceNumber"))
-                    .collect(Collectors.toSet());
+        // Convert the filter list to a Dataset
+        List<Row> filterRows = new ArrayList<>();
+        for (Map<String, Object> filter : filterList) {
+            filterRows.add(RowFactory.create(filter.get("accountNumber"), filter.get("referenceNumber")));
+        }
 
-            return data.stream()
-                    .filter(row -> {
-                        String accountNumber = row.getString(0);
-                        String referenceNumber = row.getString(1);
-                        String key = accountNumber + "-" + referenceNumber;
-                        return !filterKeys.contains(key); // Keep rows that don't match any filter
-                    })
-                    .collect(Collectors.toList());
-        };
+        // Define schema for the filter dataset
+        StructType filterSchema = new StructType()
+                .add("accountNumber", DataTypes.StringType, false)
+                .add("referenceNumber", DataTypes.StringType, false);
 
-        spark.udf().register("filterDataUDF", filterDataUDF, DataTypes.createArrayType(dataSchema));
+        Dataset<Row> filterDataset = spark.createDataFrame(filterRows, filterSchema);
 
-        // Apply the UDF to filter the data
-        Dataset<Row> filteredDataset = dataset.withColumn(
-                "data",
-                functions.callUDF("filterDataUDF", dataset.col("data"), functions.lit(filterList))
-        );
+        // Explode the "data" field to perform a join with the filter dataset
+        Dataset<Row> explodedDataset = dataset.withColumn("data", explode(col("data")));
+
+        // Perform a join to filter the data
+        Dataset<Row> filteredDataset = explodedDataset.join(filterDataset,
+                explodedDataset.col("data.accountNumber").equalTo(filterDataset.col("accountNumber"))
+                        .and(explodedDataset.col("data.referenceNumber").equalTo(filterDataset.col("referenceNumber"))), "left_anti");
+
+        // Group back the data by header and trailer
+        Dataset<Row> resultDataset = filteredDataset.groupBy("header", "trailer")
+                .agg(collect_list("data").alias("data"));
 
         // Show the result
-        filteredDataset.show(false);
+        resultDataset.show(false);
 
         spark.stop();
     }

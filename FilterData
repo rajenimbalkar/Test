@@ -43,19 +43,19 @@ public class FilterWithSpecificFields {
                 Map.of("accountNumber", "456", "referenceNumber", "def")
         );
 
-        // Extract only accountNumber and referenceNumber from filter list and store them in a Set
-        Set<Row> filterSet = filterList.stream()
-                .map(map -> RowFactory.create(map.get("accountNumber"), map.get("referenceNumber")))
-                .collect(Collectors.toSet());
-
         // Register a UDF to filter the data array
-        UDF2<List<Row>, Set<Row>, List<Row>> filterDataUDF = (data, filters) -> {
+        UDF2<List<Row>, List<Map<String, Object>>, List<Row>> filterDataUDF = (data, filters) -> {
             if (data == null) return Collections.emptyList();
+            Set<String> filterKeys = filters.stream()
+                    .map(f -> f.get("accountNumber") + "-" + f.get("referenceNumber"))
+                    .collect(Collectors.toSet());
+
             return data.stream()
                     .filter(row -> {
-                        // Check if accountNumber and referenceNumber match any filter entry
-                        Row key = RowFactory.create(row.getString(0), row.getString(1));
-                        return !filters.contains(key); // Keep rows that don't match
+                        String accountNumber = row.getString(0);
+                        String referenceNumber = row.getString(1);
+                        String key = accountNumber + "-" + referenceNumber;
+                        return !filterKeys.contains(key); // Keep rows that don't match any filter
                     })
                     .collect(Collectors.toList());
         };
@@ -65,7 +65,7 @@ public class FilterWithSpecificFields {
         // Apply the UDF to filter the data
         Dataset<Row> filteredDataset = dataset.withColumn(
                 "data",
-                functions.callUDF("filterDataUDF", dataset.col("data"), functions.lit(filterSet))
+                functions.callUDF("filterDataUDF", dataset.col("data"), functions.lit(filterList))
         );
 
         // Show the result

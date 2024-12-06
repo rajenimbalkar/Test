@@ -1,0 +1,58 @@
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class RemoveDuplicatesFromMap {
+
+    public static void main(String[] args) {
+        // Example Map with List of Maps as values
+        Map<String, List<Map<String, Object>>> dataMap = new HashMap<>();
+
+        List<Map<String, Object>> list1 = new ArrayList<>();
+        Map<String, Object> map1 = new HashMap<>();
+        map1.put("accountNumber", "123");
+        map1.put("referenceNumber", "ABC");
+        map1.put("otherField", "value1");
+
+        Map<String, Object> map2 = new HashMap<>();
+        map2.put("accountNumber", "123");
+        map2.put("referenceNumber", "ABC");
+        map2.put("otherField", "value2");
+
+        Map<String, Object> map3 = new HashMap<>();
+        map3.put("accountNumber", "456");
+        map3.put("referenceNumber", "DEF");
+        map3.put("otherField", "value3");
+
+        list1.add(map1);
+        list1.add(map2);
+        list1.add(map3);
+
+        dataMap.put("key1", list1);
+
+        // Remove duplicates from the map
+        Map<String, List<Map<String, Object>>> filteredDataMap = removeDuplicates(dataMap);
+
+        // Print the result
+        filteredDataMap.forEach((key, value) -> {
+            System.out.println("Key: " + key);
+            value.forEach(System.out::println);
+        });
+    }
+
+    public static Map<String, List<Map<String, Object>>> removeDuplicates(Map<String, List<Map<String, Object>>> dataMap) {
+        return dataMap.entrySet().stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey, // Keep the same key
+                        entry -> {
+                            // Filter duplicates in the list associated with the key
+                            Set<String> seenKeys = new HashSet<>();
+                            return entry.getValue().stream()
+                                    .filter(map -> {
+                                        String uniqueKey = map.get("accountNumber") + "|" + map.get("referenceNumber");
+                                        return seenKeys.add(uniqueKey); // Add and check uniqueness
+                                    })
+                                    .collect(Collectors.toList());
+                        }
+                ));
+    }
+}

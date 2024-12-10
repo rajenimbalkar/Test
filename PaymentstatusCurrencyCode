@@ -1,0 +1,176 @@
+Since you're dealing with a `Dataset<Row>` in Apache Spark, we can still process the `Row` objects directly without converting them into Java POJOs. Here's how you can perform the transformation efficiently using `Dataset.map` or `Dataset.mapPartitions`.
+
+---
+
+### **Steps for Processing `Dataset<Row>`**
+
+#### 1. **Structure of Row**
+A single `Row` in your `Dataset<Row>` has:
+- A `header` field containing the `COUNTRY_CODE`.
+- A `data` field, which is an array of rows/maps, where each row may have fields that need to be transformed.
+- A `trailer` field (if applicable, though it's unused here).
+
+#### 2. **Approach**
+- **Step 1:** Extract the `COUNTRY_CODE` from the `header`.
+- **Step 2:** Process the `data` array, iterating over each row in the array:
+  - Identify the fields to process based on your enum.
+  - Convert their values from `String` to `BigDecimal` and adjust the scale using Java's `Currency` API.
+- **Step 3:** Return a modified `Row` with the updated `data`.
+
+---
+
+### **Implementation**
+
+#### **Step 1: Enum Definition**
+This enum contains the fields you want to process in the `data` array.
+
+```java
+public enum FieldsToProcess {
+    FIELD1, FIELD2, FIELD3
+}
+```
+
+---
+
+#### **Step 2: Transformation Logic**
+Here's the transformation function that operates on each `Row`.
+
+```java
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Currency;
+import java.util.List;
+import java.util.Map;
+
+public class RowTransformer {
+
+    public static Row transformRow(Row row) {
+        // Extract the header and country code
+        Row header = row.getAs("header");
+        String countryCode = header.getAs("COUNTRY_CODE");
+
+        // Determine decimal precision from the country code
+        int decimalPlaces;
+        try {
+            Currency currency = Currency.getInstance(countryCode);
+            decimalPlaces = currency.getDefaultFractionDigits();
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("Invalid country code: " + countryCode, e);
+        }
+
+        // Transform the data array
+        List<Row> dataArray = row.getList(row.fieldIndex("data"));
+        List<Row> updatedData = new ArrayList<>();
+
+        for (Row dataRow : dataArray) {
+            // Convert dataRow to a mutable Map
+            Map<String, Object> dataMap = dataRow.getValuesMap(dataRow.schema().fieldNames());
+
+            for (FieldsToProcess field : FieldsToProcess.values()) {
+                String fieldName = field.name();
+                if (dataMap.containsKey(fieldName)) {
+                    Object value = dataMap.get(fieldName);
+                    if (value instanceof String) {
+                        String stringValue = (String) value;
+                        if (!stringValue.isEmpty()) {
+                            BigDecimal bigDecimalValue = new BigDecimal(stringValue.replace("+", "").replace("-", ""));
+                            if (stringValue.startsWith("-")) {
+                                bigDecimalValue = bigDecimalValue.negate();
+                            }
+                            bigDecimalValue = bigDecimalValue.setScale(decimalPlaces, BigDecimal.ROUND_HALF_EVEN);
+                            dataMap.put(fieldName, bigDecimalValue.toPlainString());
+                        }
+                    }
+                }
+            }
+
+            // Create a new Row with the updated data map
+            updatedData.add(RowFactory.create(dataMap.values().toArray()));
+        }
+
+        // Return the transformed Row
+        return RowFactory.create(header, updatedData, row.getAs("trailer"));
+    }
+}
+```
+
+---
+
+#### **Step 3: Apply the Transformation**
+Use `Dataset.map` to apply the transformation to each row in the `Dataset<Row>`.
+
+```java
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.Encoders;
+
+public class DatasetProcessor {
+
+    public static Dataset<Row> processDataset(Dataset<Row> dataset) {
+        return dataset.map(
+            RowTransformer::transformRow,  // Transformation logic
+            Encoders.row(dataset.schema()) // Preserve the original schema
+        );
+    }
+}
+```
+
+---
+
+### **Complete Example**
+
+```java
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+
+public class Main {
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+            .appName("Dataset Transformation")
+            .master("local[*]")
+            .getOrCreate();
+
+        // Load the dataset
+        Dataset<Row> dataset = spark.read()
+            .json("path/to/input.json");
+
+        // Process the dataset
+        Dataset<Row> processedDataset = DatasetProcessor.processDataset(dataset);
+
+        // Show the transformed dataset
+        processedDataset.show(false);
+    }
+}
+```
+
+---
+
+### **Explanation**
+
+1. **`RowTransformer::transformRow`**:
+   - Extracts the `COUNTRY_CODE` from the `header`.
+   - Iterates through the `data` array to transform relevant fields based on the enum.
+   - Converts string values to `BigDecimal` and adjusts the scale according to the currency's precision.
+
+2. **`Dataset.map`**:
+   - Efficiently applies the transformation to each row in a distributed manner.
+
+3. **Schema Preservation**:
+   - The schema of the dataset is preserved by using `Encoders.row()`.
+
+---
+
+### **Advantages**
+1. No need for UDFs, keeping the logic strictly in Java.
+2. Works directly with the Spark `Row` API, avoiding conversions to/from custom classes.
+3. Fully distributed transformation leveraging Spark's parallelism.
+
+---
+
+### **Key Considerations**
+- Ensure that the `COUNTRY_CODE` values in the dataset are valid ISO 3166 country codes.
+- Handle any edge cases where fields are missing or contain invalid values. You may want to add logging for such scenarios.

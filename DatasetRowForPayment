@@ -1,0 +1,189 @@
+If you don't want to use a `Broadcast` variable, the solution can still ensure efficient distributed processing by directly joining the `Dataset<Row>` (containing account numbers and their billing currency codes) with the main `Dataset<Row>` to enrich it. Here's how you can achieve this without using `Broadcast`.
+
+---
+
+### **Approach Without Broadcast**
+
+1. **Extract Account Numbers**: Extract all account numbers from the `data` rows of the `Dataset<Row>` and group them.
+2. **Read Billing Currency from the Database**: Use Spark SQL `JDBC` integration to load the account numbers and their corresponding billing currency codes.
+3. **Join the Datasets**: Use Spark's join operations to enrich the `Dataset<Row>` with billing currency codes.
+4. **Update the `data` Rows**: Apply transformations to fields matching the `Enum` directly in the `map` transformation.
+
+---
+
+### **1. Extract Account Numbers**
+Extract account numbers from the `data` array.
+
+```java
+Dataset<String> accountNumbers = dataset.flatMap(row -> {
+    List<Row> dataRows = row.getList(row.fieldIndex("data"));
+    return dataRows.stream()
+        .map(dataRow -> dataRow.getString(dataRow.fieldIndex("accountNumber")))
+        .iterator();
+}, Encoders.STRING()).distinct();
+```
+
+---
+
+### **2. Fetch Billing Currency Using Spark SQL**
+Load the billing currency mapping for all account numbers from the database using Spark SQL.
+
+```java
+Dataset<Row> billingCurrencyDataset = spark.read()
+    .format("jdbc")
+    .option("url", "jdbc:your_database_url")
+    .option("dbtable", "(SELECT account_number, billing_currency FROM account_table) temp")
+    .option("user", "your_user")
+    .option("password", "your_password")
+    .load();
+```
+
+---
+
+### **3. Join the Datasets**
+Join the main dataset (containing rows with `header`, `trailer`, and `data`) with the `billingCurrencyDataset` using the `accountNumber` field in the `data` array.
+
+1. First, explode the `data` array to create rows for each data entry.
+2. Perform the join.
+3. Rebuild the original structure after enriching it.
+
+#### Exploding the `data` Array
+```java
+Dataset<Row> explodedDataset = dataset.selectExpr("header", "trailer", "explode(data) as dataRow");
+```
+
+#### Joining with the Billing Currency Dataset
+```java
+Dataset<Row> joinedDataset = explodedDataset.join(
+    billingCurrencyDataset,
+    functions.col("dataRow.accountNumber").equalTo(functions.col("account_number")),
+    "left_outer"
+);
+```
+
+---
+
+### **4. Update the Data Rows**
+Transform the `data` rows to apply the billing currency changes.
+
+```java
+Dataset<Row> updatedDataset = joinedDataset.map(row -> {
+    Row dataRow = row.getAs("dataRow");
+    String billingCurrency = row.getAs("billing_currency");
+
+    // Apply transformations
+    List<Object> updatedFields = new ArrayList<>();
+    StructType schema = dataRow.schema();
+    for (StructField field : schema.fields()) {
+        String fieldName = field.name();
+        if (FieldsToUpdate.contains(fieldName)) {
+            String value = dataRow.getString(dataRow.fieldIndex(fieldName));
+            if (value.startsWith("+") || value.startsWith("-")) {
+                // Convert to BigDecimal using currency scale
+                BigDecimal decimalValue = new BigDecimal(value).setScale(
+                    Currency.getInstance(billingCurrency).getDefaultFractionDigits(),
+                    RoundingMode.HALF_UP
+                );
+                updatedFields.add(decimalValue.toString());
+            } else {
+                updatedFields.add(value);
+            }
+        } else {
+            updatedFields.add(dataRow.get(dataRow.fieldIndex(fieldName)));
+        }
+    }
+
+    return RowFactory.create(updatedFields.toArray());
+}, RowEncoder.apply(explodedDataset.schema()));
+```
+
+---
+
+### **5. Rebuild the Original Structure**
+After processing, group the rows back into the original structure.
+
+#### Group Data Rows Back
+```java
+Dataset<Row> rebuiltDataset = updatedDataset.groupBy("header", "trailer")
+    .agg(functions.collect_list("dataRow").as("data"));
+```
+
+---
+
+### **6. Full Code**
+Here's the full example:
+
+```java
+// Step 1: Extract account numbers
+Dataset<String> accountNumbers = dataset.flatMap(row -> {
+    List<Row> dataRows = row.getList(row.fieldIndex("data"));
+    return dataRows.stream()
+        .map(dataRow -> dataRow.getString(dataRow.fieldIndex("accountNumber")))
+        .iterator();
+}, Encoders.STRING()).distinct();
+
+// Step 2: Load billing currency mapping
+Dataset<Row> billingCurrencyDataset = spark.read()
+    .format("jdbc")
+    .option("url", "jdbc:your_database_url")
+    .option("dbtable", "(SELECT account_number, billing_currency FROM account_table) temp")
+    .option("user", "your_user")
+    .option("password", "your_password")
+    .load();
+
+// Step 3: Explode the data array
+Dataset<Row> explodedDataset = dataset.selectExpr("header", "trailer", "explode(data) as dataRow");
+
+// Step 4: Join datasets
+Dataset<Row> joinedDataset = explodedDataset.join(
+    billingCurrencyDataset,
+    functions.col("dataRow.accountNumber").equalTo(functions.col("account_number")),
+    "left_outer"
+);
+
+// Step 5: Transform data rows
+Dataset<Row> updatedDataset = joinedDataset.map(row -> {
+    Row dataRow = row.getAs("dataRow");
+    String billingCurrency = row.getAs("billing_currency");
+
+    // Apply transformations
+    List<Object> updatedFields = new ArrayList<>();
+    StructType schema = dataRow.schema();
+    for (StructField field : schema.fields()) {
+        String fieldName = field.name();
+        if (FieldsToUpdate.contains(fieldName)) {
+            String value = dataRow.getString(dataRow.fieldIndex(fieldName));
+            if (value.startsWith("+") || value.startsWith("-")) {
+                BigDecimal decimalValue = new BigDecimal(value).setScale(
+                    Currency.getInstance(billingCurrency).getDefaultFractionDigits(),
+                    RoundingMode.HALF_UP
+                );
+                updatedFields.add(decimalValue.toString());
+            } else {
+                updatedFields.add(value);
+            }
+        } else {
+            updatedFields.add(dataRow.get(dataRow.fieldIndex(fieldName)));
+        }
+    }
+
+    return RowFactory.create(updatedFields.toArray());
+}, RowEncoder.apply(explodedDataset.schema()));
+
+// Step 6: Rebuild the original structure
+Dataset<Row> rebuiltDataset = updatedDataset.groupBy("header", "trailer")
+    .agg(functions.collect_list("dataRow").as("data"));
+
+// Show the result
+rebuiltDataset.show(false);
+```
+
+---
+
+### **Key Points**
+1. **No Broadcast**: The join operation eliminates the need for broadcasting a map of account numbers and currency codes.
+2. **Distributed Execution**: All operations are distributed across Spark worker nodes.
+3. **Maintain Original Structure**: The structure of the `Dataset<Row>` is preserved, with only the `data` rows updated.
+4. **Database Integration**: Use `JDBC` for fetching data and Spring DAO for modularity.
+
+This approach ensures efficiency while adhering to Spark’s distributed nature. Let me know if you need further clarification!

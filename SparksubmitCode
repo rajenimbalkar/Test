@@ -1,0 +1,108 @@
+The **`SparkSubmitOperator`** in Airflow executes a Spark job and returns the **task instance's status**, which can be used to determine the status of the Spark job. To specifically get the **exit code** of the Spark job (status code), you can configure and monitor the logs or parse the task return value.
+
+---
+
+### **Steps to Check the Status Code**
+
+#### **1. Logs in `SparkSubmitOperator`**
+By default, the `SparkSubmitOperator` logs the Spark job's exit code in the Airflow task logs. To confirm the status:
+- Open the logs of the `SparkSubmitOperator` task in the Airflow UI.
+- Look for an entry similar to:
+  ```
+  INFO - Finished with status: SUCCESS
+  INFO - Exit code: 0
+  ```
+- A **`0`** exit code indicates success, while non-zero values indicate failure.
+
+---
+
+#### **2. Parse the Task's Return Value**
+The **`SparkSubmitOperator`** allows you to fetch the task result programmatically if you need to check it within the DAG itself.
+
+**Example DAG:**
+```python
+from airflow import DAG
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.operators.python import PythonOperator
+from datetime import datetime
+
+# Define default arguments
+default_args = {
+    "owner": "airflow",
+    "start_date": datetime(2024, 1, 1),
+    "retries": 1,
+}
+
+# Create the DAG
+dag = DAG(
+    dag_id="spark_submit_check_status",
+    default_args=default_args,
+    schedule_interval=None,
+    catchup=False,
+)
+
+# Define SparkSubmitOperator
+spark_submit_task = SparkSubmitOperator(
+    task_id="spark_submit_task",
+    application="/path/to/your/spring-boot-app.jar",
+    conn_id="spark_default",
+    verbose=True,
+    dag=dag,
+)
+
+# Define a Python task to check status
+def check_spark_status(**kwargs):
+    task_instance = kwargs["ti"]
+    # Get the return value of the SparkSubmitOperator task
+    task_return_value = task_instance.xcom_pull(task_ids="spark_submit_task")
+    print(f"Spark Submit Task Return Value: {task_return_value}")
+
+check_status_task = PythonOperator(
+    task_id="check_status_task",
+    python_callable=check_spark_status,
+    provide_context=True,
+    dag=dag,
+)
+
+# Task dependencies
+spark_submit_task >> check_status_task
+```
+
+#### Explanation:
+1. **`xcom_pull`**: The `xcom_pull` method retrieves the return value of the `SparkSubmitOperator`.  
+   - If the Spark job fails, it might return an error message or status.
+2. **Monitor Status**: Use the return value to decide further actions in the DAG.
+
+---
+
+#### **3. Add Status Logging in Your Spark Application**
+If the Spark application does not exit with proper status codes or log messages, ensure the application uses **`System.exit(0)`** for success and non-zero codes for failures.
+
+---
+
+#### **4. Retry or Alert Based on Status**
+You can configure Airflow retries or trigger notifications based on the Spark job status.
+
+**Example Using Alerts:**
+```python
+from airflow.operators.email import EmailOperator
+
+email_on_failure = EmailOperator(
+    task_id="email_on_failure",
+    to="admin@example.com",
+    subject="Spark Job Failed",
+    html_content="<p>The Spark job has failed. Please check the logs.</p>",
+    dag=dag,
+)
+
+spark_submit_task >> check_status_task >> email_on_failure
+```
+
+---
+
+### **Best Practices**
+1. **Verbose Logging**: Always enable `verbose=True` in the `SparkSubmitOperator` to capture detailed logs.
+2. **Proper Exit Codes**: Ensure the Spark application returns proper exit codes for success (`0`) and failure (`non-zero`).
+3. **Error Handling**: Use Airflow's `on_failure_callback` or `trigger_rule` mechanisms for advanced error handling.
+
+This approach ensures you can monitor the task status programmatically and take appropriate actions based on the Spark job's outcome.

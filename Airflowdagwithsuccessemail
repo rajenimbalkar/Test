@@ -1,0 +1,71 @@
+from airflow import DAG
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.operators.email import EmailOperator
+from airflow.utils.dates import days_ago
+
+# Default arguments
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+}
+
+# DAG Definition
+with DAG(
+    "springboot_spark_submit_dag",
+    default_args=default_args,
+    description="Run Spring Boot Spark Application with Success and Failure Email Notifications",
+    schedule_interval=None,
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    # SparkSubmitOperator
+    spark_submit_task = SparkSubmitOperator(
+        task_id="spark_submit_task",
+        application="/path/to/springboot-app.jar",
+        java_class="com.example.SparkApplication",
+        application_args=["arg1", "arg2"],  # Arguments to pass
+        conf={
+            "spark.driver.memory": "2g",
+            "spark.executor.memory": "4g",
+        },
+        name="springboot_spark_job",
+        verbose=True,
+    )
+
+    # EmailOperator for success notification
+    success_email = EmailOperator(
+        task_id="success_email",
+        to="admin@example.com",
+        subject="Spark Job Succeeded",
+        html_content="""
+        <p>The Spring Boot Spark application has completed successfully.</p>
+        <p>Task: {{ task_instance.task_id }}</p>
+        <p>Execution Date: {{ ds }}</p>
+        <p>Logs: <a href="{{ task_instance.log_url }}">View Logs</a></p>
+        """,
+    )
+
+    # EmailOperator for failure notification
+    failure_email = EmailOperator(
+        task_id="failure_email",
+        to="admin@example.com",
+        subject="Spark Job Failed",
+        html_content="""
+        <p>The Spring Boot Spark application has failed.</p>
+        <p>Task: {{ task_instance.task_id }}</p>
+        <p>Execution Date: {{ ds }}</p>
+        <p>Logs: <a href="{{ task_instance.log_url }}">View Logs</a></p>
+        """,
+    )
+
+    # Task dependencies
+    spark_submit_task >> success_email
+    spark_submit_task >> failure_email
+
+    # Trigger Rules
+    success_email.trigger_rule = "all_success"
+    failure_email.trigger_rule = "all_failed"

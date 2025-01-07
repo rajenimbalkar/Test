@@ -1,0 +1,81 @@
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.functions;
+import org.apache.spark.api.java.function.ForeachPartitionFunction;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class PaymentStatusUpdater {
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("PaymentStatusUpdater")
+                .master("local")
+                .getOrCreate();
+
+        // Load Payments Dataset
+        Dataset<Row> payments = spark.read()
+                .format("csv") // Replace with your source format (e.g., JDBC, Parquet)
+                .option("header", "true")
+                .load("path_to_payments_file"); // Replace with your file path
+        payments = payments.select("account_number", "transaction_reference", "payment_status");
+
+        // Load Transactions Dataset
+        Dataset<Row> transactions = spark.read()
+                .format("csv") // Replace with your source format (e.g., JDBC, Parquet)
+                .option("header", "true")
+                .load("path_to_transactions_file"); // Replace with your file path
+        transactions = transactions.select("account_number", "transaction_reference", "transaction_status");
+
+        // Perform a Join on account_number and transaction_reference
+        Dataset<Row> joinedData = payments.join(transactions,
+                payments.col("account_number").equalTo(transactions.col("account_number"))
+                        .and(payments.col("transaction_reference").equalTo(transactions.col("transaction_reference"))),
+                "inner");
+
+        // Add a column to indicate whether the status needs an update
+        Dataset<Row> withUpdateFlag = joinedData.withColumn("needs_update",
+                functions.when(joinedData.col("payment_status").equalTo(joinedData.col("transaction_status")), false)
+                        .otherwise(true));
+
+        // Separate rows that need updates and those that don't
+        Dataset<Row> rowsToUpdate = withUpdateFlag.filter("needs_update = true")
+                .select("account_number", "transaction_reference", "payment_status");
+
+        Dataset<Row> noUpdateRequired = withUpdateFlag.filter("needs_update = false")
+                .select("account_number", "transaction_reference", "payment_status");
+
+        // Collect rows that do not need updates into a map
+        Map<String, String> noUpdateMap = new HashMap<>();
+        noUpdateRequired.foreachPartition((ForeachPartitionFunction<Row>) partition -> {
+            partition.forEachRemaining(row -> {
+                String key = row.getString(row.fieldIndex("account_number")) + "-" +
+                        row.getString(row.fieldIndex("transaction_reference"));
+                String value = row.getString(row.fieldIndex("payment_status"));
+                noUpdateMap.put(key, value);
+            });
+        });
+
+        // Update rows in the transaction table (mock implementation)
+        rowsToUpdate.foreachPartition((ForeachPartitionFunction<Row>) partition -> {
+            // Here, implement the database update logic (e.g., using JDBC)
+            partition.forEachRemaining(row -> {
+                String accountNumber = row.getString(row.fieldIndex("account_number"));
+                String transactionReference = row.getString(row.fieldIndex("transaction_reference"));
+                String newStatus = row.getString(row.fieldIndex("payment_status"));
+
+                // Mock database update logic
+                System.out.println("Updating transaction table: Account=" + accountNumber +
+                        ", Reference=" + transactionReference + ", New Status=" + newStatus);
+            });
+        });
+
+        // Output the map for verification
+        System.out.println("No update required map: " + noUpdateMap);
+
+        spark.stop();
+    }
+}

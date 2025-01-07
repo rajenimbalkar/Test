@@ -1,0 +1,99 @@
+import org.apache.spark.sql.*;
+import scala.Tuple2;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class SparkJDBCInClauseWithProperties {
+
+    public static void main(String[] args) {
+        SparkSession spark = SparkSession.builder()
+                .appName("Spark JDBC IN Clause with Properties")
+                .getOrCreate();
+
+        // Load source dataset
+        Dataset<Row> sourceDataset = spark.read()
+                .format("csv") // Replace with actual data source (e.g., Parquet, JDBC, etc.)
+                .option("header", "true")
+                .load("path_to_file"); // Replace with your file path or source
+
+        // Extract distinct account numbers
+        List<String> accountNumbers = sourceDataset.select("account_number")
+                .distinct()
+                .collectAsList()
+                .stream()
+                .map(row -> row.getString(0))
+                .collect(Collectors.toList());
+
+        // Process each account in parallel
+        List<Tuple2<String, String>> notFound = new ArrayList<>();
+        accountNumbers.parallelStream().forEach(account -> {
+            List<String> statementReferences = sourceDataset
+                    .filter(col("account_number").equalTo(account))
+                    .select("statement_reference")
+                    .collectAsList()
+                    .stream()
+                    .map(row -> row.getString(0))
+                    .collect(Collectors.toList());
+
+            // Process chunks for the account
+            List<Tuple2<String, String>> accountNotFound = processChunks(spark, account, statementReferences, 1000);
+            synchronized (notFound) {
+                notFound.addAll(accountNotFound);
+            }
+        });
+
+        // Print the "not found" results
+        notFound.forEach(pair -> 
+            System.out.println("Not Found -> Account: " + pair._1 + ", Statement Reference: " + pair._2));
+    }
+
+    private static List<Tuple2<String, String>> processChunks(SparkSession spark, String accountNumber, List<String> statementReferences, int batchSize) {
+        List<Tuple2<String, String>> notFoundList = new ArrayList<>();
+        int totalReferences = statementReferences.size();
+
+        // Create properties object for database connection
+        Properties dbProperties = new Properties();
+        dbProperties.setProperty("user", "<username>");
+        dbProperties.setProperty("password", "<password>");
+        dbProperties.setProperty("driver", "com.ibm.db2.jcc.DB2Driver"); // Optional, specify DB driver class
+
+        // JDBC URL (replace <hostname>, <port>, <database> with actual values)
+        String jdbcUrl = "jdbc:db2://<hostname>:<port>/<database>";
+
+        for (int i = 0; i < totalReferences; i += batchSize) {
+            int end = Math.min(i + batchSize, totalReferences);
+            List<String> chunk = statementReferences.subList(i, end);
+
+            // Generate the IN clause query
+            String inClause = chunk.stream().map(ref -> "'" + ref + "'").collect(Collectors.joining(","));
+            String query = String.format(
+                    "SELECT statement_reference FROM your_table WHERE account_number = '%s' AND statement_reference IN (%s)",
+                    accountNumber, inClause);
+
+            // Read data from the database using jdbc with the properties object
+            Dataset<Row> dbDataset = spark.read()
+                    .format("jdbc")
+                    .option("url", jdbcUrl)  // JDBC URL
+                    .option("dbtable", "( " + query + " ) AS temp")  // Wrap query in parentheses as derived table
+                    .options(new HashMap<>()) // Use an empty map for any additional options
+                    .load();  // Load data from JDBC using properties
+
+            // Collect found statement references
+            List<String> foundReferences = dbDataset.select("statement_reference")
+                    .collectAsList()
+                    .stream()
+                    .map(row -> row.getString(0))
+                    .collect(Collectors.toList());
+
+            // Identify not found references
+            for (String reference : chunk) {
+                if (!foundReferences.contains(reference)) {
+                    notFoundList.add(new Tuple2<>(accountNumber, reference));
+                }
+            }
+        }
+
+        return notFoundList;
+    }
+}

@@ -1,18 +1,15 @@
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.functions;
-import org.apache.spark.api.java.function.ForeachPartitionFunction;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
-public class PaymentStatusUpdater {
+public class LatestPaymentStatusUpdater {
 
     public static void main(String[] args) {
         SparkSession spark = SparkSession.builder()
-                .appName("PaymentStatusUpdater")
+                .appName("LatestPaymentStatusUpdater")
                 .master("local")
                 .getOrCreate();
 
@@ -21,19 +18,35 @@ public class PaymentStatusUpdater {
                 .format("csv") // Replace with your source format (e.g., JDBC, Parquet)
                 .option("header", "true")
                 .load("path_to_payments_file"); // Replace with your file path
-        payments = payments.select("account_number", "transaction_reference", "payment_status");
 
         // Load Transactions Dataset
         Dataset<Row> transactions = spark.read()
                 .format("csv") // Replace with your source format (e.g., JDBC, Parquet)
                 .option("header", "true")
                 .load("path_to_transactions_file"); // Replace with your file path
-        transactions = transactions.select("account_number", "transaction_reference", "transaction_status");
 
-        // Perform a Join on account_number and transaction_reference
-        Dataset<Row> joinedData = payments.join(transactions,
-                payments.col("account_number").equalTo(transactions.col("account_number"))
-                        .and(payments.col("transaction_reference").equalTo(transactions.col("transaction_reference"))),
+        // Define the status precedence
+        Dataset<Row> paymentsWithOrder = payments.withColumn("status_order", functions
+                .when(functions.col("payment_status").equalTo("blank"), 1)
+                .when(functions.col("payment_status").equalTo("not paid"), 2)
+                .when(functions.col("payment_status").equalTo("partial paid"), 3)
+                .when(functions.col("payment_status").equalTo("paid"), 4)
+                .otherwise(0)); // Default for unknown statuses
+
+        // Window function to determine the latest status for each account and transaction reference
+        WindowSpec windowSpec = Window.partitionBy("account_number", "transaction_reference")
+                .orderBy(functions.col("status_order").desc());
+
+        // Find the latest status
+        Dataset<Row> latestPayments = paymentsWithOrder
+                .withColumn("row_number", functions.row_number().over(windowSpec))
+                .filter("row_number = 1") // Keep only the latest status
+                .drop("row_number", "status_order");
+
+        // Join with transactions to compare statuses
+        Dataset<Row> joinedData = latestPayments.join(transactions,
+                latestPayments.col("account_number").equalTo(transactions.col("account_number"))
+                        .and(latestPayments.col("transaction_reference").equalTo(transactions.col("transaction_reference"))),
                 "inner");
 
         // Add a column to indicate whether the status needs an update

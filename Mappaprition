@@ -1,0 +1,71 @@
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.junit.Test;
+import org.mockito.Mockito;
+
+import java.util.*;
+
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.*;
+
+public class RddProcessorTest {
+
+    @Test
+    public void testProcessRddUsingDoAnswer() {
+        // Mock JavaRDD
+        JavaRDD<Row> inputRdd = mock(JavaRDD.class);
+        JavaRDD<Map<String, List<Row>>> outputRdd = mock(JavaRDD.class); // Mock the output RDD
+
+        // Create test data
+        List<Row> partition1 = Arrays.asList(
+                RowFactory.create("key1", "value1"),
+                RowFactory.create("key2", "value2")
+        );
+        List<Row> partition2 = Arrays.asList(
+                RowFactory.create("key1", "value3"),
+                RowFactory.create("key3", "value4")
+        );
+        List<Iterator<Row>> partitions = Arrays.asList(partition1.iterator(), partition2.iterator());
+
+        // Mock the behavior of mapPartitions
+        doAnswer(invocation -> {
+            Iterator<Row> iterator = invocation.getArgument(0); // Iterator<Row> passed to mapPartitions
+            List<Map<String, List<Row>>> results = new ArrayList<>();
+
+            // Process each partition
+            for (Iterator<Row> partition : partitions) {
+                Map<String, List<Row>> partitionResult = new HashMap<>();
+                while (partition.hasNext()) {
+                    Row row = partition.next();
+                    String key = row.getString(0); // Group by the first column
+                    partitionResult.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+                }
+                results.add(partitionResult);
+            }
+
+            // Return a mocked RDD that simulates the processed results
+            when(outputRdd.collect()).thenReturn(results);
+            return outputRdd;
+        }).when(inputRdd).mapPartitions(Mockito.any());
+
+        // Call the method under test
+        RddProcessor processor = new RddProcessor();
+        JavaRDD<Map<String, List<Row>>> resultRdd = processor.processRdd(inputRdd);
+
+        // Expected results
+        Map<String, List<Row>> expectedPartition1 = new HashMap<>() {{
+            put("key1", Collections.singletonList(RowFactory.create("key1", "value1")));
+            put("key2", Collections.singletonList(RowFactory.create("key2", "value2")));
+        }};
+        Map<String, List<Row>> expectedPartition2 = new HashMap<>() {{
+            put("key1", Collections.singletonList(RowFactory.create("key1", "value3")));
+            put("key3", Collections.singletonList(RowFactory.create("key3", "value4")));
+        }};
+        List<Map<String, List<Row>>> expectedResults = Arrays.asList(expectedPartition1, expectedPartition2);
+
+        // Collect and verify results
+        List<Map<String, List<Row>>> actualResults = resultRdd.collect();
+        assertEquals(expectedResults, actualResults);
+    }
+}

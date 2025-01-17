@@ -1,0 +1,196 @@
+To achieve the setup where a Spring Boot application integrated with Apache Spark is submitted via `spark-submit` from Airflow using the `SparkSubmitOperator`, you can implement logging and error-handling mechanisms to track the status of the job. Below is a comprehensive guide along with sample code snippets for each component.
+
+---
+
+### **1. Spring Boot Application**
+
+The Spring Boot application should be designed to run as a Spark application. Use a combination of Spring Boot and Spark's APIs. Ensure proper exit codes to indicate success or failure.
+
+#### Maven/Gradle Dependencies
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-core_2.12</artifactId>
+        <version>3.3.1</version>
+        <scope>provided</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+        <version>3.1.0</version>
+    </dependency>
+</dependencies>
+```
+
+#### Example Spark Application in Spring Boot
+```java
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.SparkSession;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+import java.util.Arrays;
+
+@SpringBootApplication
+public class SparkApplication implements CommandLineRunner {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SparkApplication.class, args);
+    }
+
+    @Override
+    public void run(String... args) {
+        try {
+            SparkSession spark = SparkSession.builder()
+                    .appName("Spring Boot Spark Application")
+                    .getOrCreate();
+
+            JavaSparkContext sc = new JavaSparkContext(spark.sparkContext());
+
+            // Example Spark computation
+            JavaRDD<Integer> data = sc.parallelize(Arrays.asList(1, 2, 3, 4, 5));
+            int sum = data.reduce(Integer::sum);
+
+            System.out.println("Sum of numbers: " + sum);
+            spark.stop();
+            System.exit(0); // Exit with success code
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.exit(1); // Exit with failure code
+        }
+    }
+}
+```
+
+### **2. Spark Submit Operator in Airflow**
+
+Use the `SparkSubmitOperator` to submit the Spring Boot application to YARN.
+
+#### Airflow DAG
+```python
+from airflow import DAG
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from datetime import datetime
+import logging
+
+# Airflow DAG definition
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+}
+
+with DAG(
+    dag_id='spark_submit_example',
+    default_args=default_args,
+    start_date=datetime(2025, 1, 17),
+    schedule_interval=None,
+    catchup=False,
+) as dag:
+
+    # Define SparkSubmitOperator
+    submit_springboot_spark_app = SparkSubmitOperator(
+        task_id='submit_spark_job',
+        application='/path/to/your/spring-boot-spark-app.jar',  # Path to your JAR
+        java_class='com.example.SparkApplication',  # Fully qualified main class
+        conf={
+            'spark.yarn.deploy-mode': 'cluster',
+            'spark.executor.memory': '1g',
+            'spark.driver.memory': '1g',
+        },
+        application_args=[],
+        master='yarn',
+        deploy_mode='cluster',
+        verbose=True
+    )
+
+    submit_springboot_spark_app
+```
+
+### **3. Log Application Status in Airflow**
+
+The Airflow task logs output from the `SparkSubmitOperator`. If the Spring Boot application exits with a non-zero status, Airflow logs this as a failure.
+
+#### Sample Logs in Airflow
+- Airflow automatically captures the logs of `spark-submit` and outputs them in the Airflow task logs.
+- Use the `verbose=True` flag in `SparkSubmitOperator` to ensure detailed logging.
+
+---
+
+### **4. Check for Application Completion and Log Status**
+
+The `spark-submit` command's return code is critical for understanding success or failure:
+- Exit code `0` = Success
+- Exit code `1` = Failure
+
+#### Airflow Logs Example
+In the Airflow logs, you can see:
+1. Spark's logs (stdout and stderr).
+2. The success or failure message from `spark-submit`.
+
+---
+
+### **5. Advanced Logging with Custom Callback**
+
+To handle and log status programmatically in Airflow, you can use a custom Python function or callback.
+
+#### Custom Logging Example
+```python
+from airflow import DAG
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.utils.dates import days_ago
+import logging
+
+# Logging setup
+logger = logging.getLogger("airflow.task")
+
+def log_spark_status(context):
+    task_instance = context['task_instance']
+    task_logs = task_instance.xcom_pull(task_ids='submit_spark_job', key='return_value')
+    logger.info("Spark job logs: %s", task_logs)
+
+default_args = {
+    'owner': 'airflow',
+    'start_date': days_ago(1),
+}
+
+with DAG(
+    dag_id='spark_submit_with_logging',
+    default_args=default_args,
+    schedule_interval=None,
+    catchup=False,
+) as dag:
+
+    # SparkSubmitOperator with logging callback
+    submit_spark_job = SparkSubmitOperator(
+        task_id='submit_spark_job',
+        application='/path/to/your/spring-boot-spark-app.jar',
+        java_class='com.example.SparkApplication',
+        master='yarn',
+        deploy_mode='cluster',
+        verbose=True,
+        on_success_callback=log_spark_status,
+        on_failure_callback=log_spark_status,
+    )
+```
+
+---
+
+### **6. Monitor with Spark History Server**
+For more insights:
+1. Enable the Spark History Server in your cluster.
+2. Use `spark.eventLog.enabled=true` in the Spark configuration to track detailed application execution.
+
+---
+
+### Summary
+
+- **Spring Boot Application**: Ensure it has a proper exit code to indicate success/failure.
+- **Airflow**: Use `SparkSubmitOperator` with detailed logging enabled.
+- **Logging**: Use Airflow task logs or a custom logging callback to capture the application status.
+- **Error Handling**: Ensure non-zero exit codes are handled as failures in Airflow.

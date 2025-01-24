@@ -1,8 +1,10 @@
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.util.zip.GZIPOutputStream;
+import java.util.zip.GZIPInputStream;
 
 public class JsonCompressor {
+
+    // Method to compress JSON string into a byte array
     public static byte[] compressJson(String json) throws IOException {
         if (json == null || json.isEmpty()) {
             throw new IllegalArgumentException("Input JSON cannot be null or empty");
@@ -16,12 +18,38 @@ public class JsonCompressor {
         return byteArrayOutputStream.toByteArray();
     }
 
+    // Method to decompress byte array back into a JSON string
+    public static String decompressJson(byte[] compressedData) throws IOException {
+        if (compressedData == null || compressedData.length == 0) {
+            throw new IllegalArgumentException("Input data cannot be null or empty");
+        }
+
+        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(compressedData);
+        try (GZIPInputStream gzipInputStream = new GZIPInputStream(byteArrayInputStream);
+             InputStreamReader inputStreamReader = new InputStreamReader(gzipInputStream, "UTF-8");
+             BufferedReader bufferedReader = new BufferedReader(inputStreamReader)) {
+
+            StringBuilder decompressedJson = new StringBuilder();
+            String line;
+            while ((line = bufferedReader.readLine()) != null) {
+                decompressedJson.append(line);
+            }
+
+            return decompressedJson.toString();
+        }
+    }
+
     public static void main(String[] args) {
         String largeJson = "{ \"key1\": \"value1\", \"key2\": \"value2\", \"key3\": [1, 2, 3] }";
 
         try {
+            // Compress the JSON string
             byte[] compressedBytes = compressJson(largeJson);
             System.out.println("Compressed JSON size: " + compressedBytes.length + " bytes");
+
+            // Decompress the JSON string
+            String decompressedJson = decompressJson(compressedBytes);
+            System.out.println("Decompressed JSON: " + decompressedJson);
         } catch (IOException e) {
             e.printStackTrace();
         }

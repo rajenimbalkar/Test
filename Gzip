@@ -1,0 +1,29 @@
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.zip.GZIPOutputStream;
+
+public class JsonCompressor {
+    public static byte[] compressJson(String json) throws IOException {
+        if (json == null || json.isEmpty()) {
+            throw new IllegalArgumentException("Input JSON cannot be null or empty");
+        }
+
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+        try (GZIPOutputStream gzipOutputStream = new GZIPOutputStream(byteArrayOutputStream)) {
+            gzipOutputStream.write(json.getBytes("UTF-8"));
+        }
+
+        return byteArrayOutputStream.toByteArray();
+    }
+
+    public static void main(String[] args) {
+        String largeJson = "{ \"key1\": \"value1\", \"key2\": \"value2\", \"key3\": [1, 2, 3] }";
+
+        try {
+            byte[] compressedBytes = compressJson(largeJson);
+            System.out.println("Compressed JSON size: " + compressedBytes.length + " bytes");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}

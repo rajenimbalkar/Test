@@ -1,0 +1,66 @@
+import org.apache.commons.compress.archivers.ArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+
+public class CompressionUtil {
+
+    // Compress and archive a JSON byte array
+    public static byte[] compressAndArchive(byte[] jsonBytes) throws IOException {
+        try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+             GzipCompressorOutputStream gzipOut = new GzipCompressorOutputStream(byteArrayOutputStream);
+             ZipArchiveOutputStream zipOut = new ZipArchiveOutputStream(gzipOut)) {
+
+            // Create a new entry for the archive
+            ArchiveEntry entry = new ZipArchiveEntry("data.json");
+            zipOut.putArchiveEntry(entry);
+
+            // Write the JSON bytes to the archive
+            zipOut.write(jsonBytes);
+            zipOut.closeArchiveEntry();
+            zipOut.finish();
+            return byteArrayOutputStream.toByteArray();
+        }
+    }
+
+    // Decompress and extract the JSON byte array
+    public static byte[] decompressAndExtract(byte[] compressedBytes) throws IOException {
+        try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(compressedBytes);
+             ByteArrayOutputStream extractedBytes = new ByteArrayOutputStream()) {
+
+            // Create an input stream for decompression (e.g., Gzip)
+            try (GzipCompressorInputStream gzipIn = new GzipCompressorInputStream(byteArrayInputStream);
+                 ZipArchiveInputStream zipIn = new ZipArchiveInputStream(gzipIn)) {
+
+                ArchiveEntry entry = zipIn.getNextEntry();
+                if (entry != null && !entry.isDirectory()) {
+                    byte[] buffer = new byte[1024];
+                    int bytesRead;
+                    while ((bytesRead = zipIn.read(buffer)) != -1) {
+                        extractedBytes.write(buffer, 0, bytesRead);
+                    }
+                }
+            }
+            return extractedBytes.toByteArray();
+        }
+    }
+
+    public static void main(String[] args) throws IOException {
+        // Example JSON as byte array
+        String jsonString = "{\"key\":\"value\"}";
+        byte[] jsonBytes = jsonString.getBytes();
+
+        // Compress and archive
+        byte[] compressedBytes = compressAndArchive(jsonBytes);
+        System.out.println("Compressed Bytes: " + compressedBytes.length);
+
+        // Decompress and extract
+        byte[] decompressedBytes = decompressAndExtract(compressedBytes);
+        String decompressedJson = new String(decompressedBytes);
+        System.out.println("Decompressed JSON: " + decompressedJson);
+    }
+}

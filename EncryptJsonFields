@@ -1,0 +1,76 @@
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.api.java.UDF1;
+import org.apache.spark.sql.types.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.apache.spark.sql.functions.*;
+
+public class EncryptJsonColumn {
+    public static void main(String[] args) {
+        // Create SparkSession
+        SparkSession spark = SparkSession.builder()
+                .appName("Encrypt JSON Column in Binary Format")
+                .master("local")
+                .getOrCreate();
+
+        // Sample dataset with a binary (blob) column containing JSON
+        Dataset<Row> dataset = spark.createDataFrame(
+                java.util.Arrays.asList(
+                        RowFactory.create(1, "Alice", "{\"name\":\"Alice\",\"ssn\":\"123-45-6789\"}".getBytes(StandardCharsets.UTF_8)),
+                        RowFactory.create(2, "Bob", "{\"name\":\"Bob\",\"ssn\":\"987-65-4321\"}".getBytes(StandardCharsets.UTF_8))
+                ),
+                new StructType()
+                        .add("ID", DataTypes.IntegerType)
+                        .add("Name", DataTypes.StringType)
+                        .add("JsonBinary", DataTypes.BinaryType)  // Binary column containing JSON
+        );
+
+        // Register UDF to decrypt JSON, modify it, and re-encrypt it
+        spark.udf().register("encryptJson", (byte[] binaryData) -> {
+            if (binaryData == null) return null;
+
+            try {
+                // Convert byte array to JSON string
+                String jsonString = new String(binaryData, StandardCharsets.UTF_8);
+                
+                // Parse JSON
+                ObjectMapper objectMapper = new ObjectMapper();
+                Map<String, Object> jsonMap = objectMapper.readValue(jsonString, HashMap.class);
+
+                // Encrypt specific column (e.g., "ssn")
+                if (jsonMap.containsKey("ssn")) {
+                    String ssn = (String) jsonMap.get("ssn");
+                    jsonMap.put("ssn", Base64.getEncoder().encodeToString(ssn.getBytes(StandardCharsets.UTF_8)));  // Simple Base64 encryption
+                }
+
+                // Convert back to JSON string
+                String updatedJson = objectMapper.writeValueAsString(jsonMap);
+
+                // Convert JSON string back to byte array
+                return updatedJson.getBytes(StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                e.printStackTrace();
+                return null;
+            }
+        }, DataTypes.BinaryType);
+
+        // Apply the UDF to update the binary column with the encrypted JSON
+        Dataset<Row> updatedDataset = dataset.withColumn(
+                "JsonBinary",
+                callUDF("encryptJson", col("JsonBinary"))
+        );
+
+        // Show the result (decode binary for display)
+        updatedDataset.withColumn(
+                "JsonString",
+                expr("CAST(JsonBinary AS STRING)") // Convert binary back to string for display
+        ).show(false);
+
+        // Stop SparkSession
+        spark.stop();
+    }
+}

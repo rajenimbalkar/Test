@@ -2,34 +2,37 @@ import org.apache.spark.sql.*;
 import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 import static org.apache.spark.sql.functions.*;
 
-public class EncryptJsonColumnWithEnum {
+public class EncryptRecursiveJson {
     public static void main(String[] args) {
         // Create SparkSession
         SparkSession spark = SparkSession.builder()
-                .appName("Encrypt JSON Column with Enum")
+                .appName("Encrypt Recursive JSON in Binary Column")
                 .master("local")
                 .getOrCreate();
 
-        // Sample dataset with a binary column containing JSON
+        // Sample dataset with a binary JSON column
         Dataset<Row> dataset = spark.createDataFrame(
                 Arrays.asList(
-                        RowFactory.create(1, "Alice", "{\"name\":\"Alice\",\"ssn\":\"123-45-6789\",\"email\":\"alice@example.com\"}".getBytes(StandardCharsets.UTF_8)),
-                        RowFactory.create(2, "Bob", "{\"name\":\"Bob\",\"ssn\":\"987-65-4321\",\"phone\":\"1234567890\"}".getBytes(StandardCharsets.UTF_8))
+                        RowFactory.create(1, "Alice", ("{\"meta\": {\"info\": \"data\"}, " +
+                                "\"records\": [{\"name\": \"Alice\", \"ssn\": \"123-45-6789\", \"email\": \"alice@example.com\"}], " +
+                                "\"summary\": \"end\"}").getBytes(StandardCharsets.UTF_8)),
+                        RowFactory.create(2, "Bob", ("{\"meta\": {\"info\": \"data\"}, " +
+                                "\"records\": [{\"name\": \"Bob\", \"ssn\": \"987-65-4321\", \"phone\": \"1234567890\"}], " +
+                                "\"summary\": \"end\"}").getBytes(StandardCharsets.UTF_8))
                 ),
                 new StructType()
                         .add("ID", DataTypes.IntegerType)
                         .add("Name", DataTypes.StringType)
-                        .add("JsonBinary", DataTypes.BinaryType) // Binary column containing JSON
+                        .add("JsonBinary", DataTypes.BinaryType)  // Binary column containing JSON
         );
 
-        // Register UDF to encrypt only PII fields
-        spark.udf().register("encryptPiiFields", (byte[] binaryData) -> {
+        // Register UDF to encrypt PII fields dynamically
+        spark.udf().register("encryptRecursivePii", (byte[] binaryData) -> {
             if (binaryData == null) return null;
 
             try {
@@ -40,13 +43,8 @@ public class EncryptJsonColumnWithEnum {
                 ObjectMapper objectMapper = new ObjectMapper();
                 Map<String, Object> jsonMap = objectMapper.readValue(jsonString, HashMap.class);
 
-                // Encrypt only PII fields
-                for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
-                    String key = entry.getKey();
-                    if (PiiUtil.isPiiData(key) && entry.getValue() instanceof String) {
-                        jsonMap.put(key, PiiUtil.encryptData((String) entry.getValue())); // Encrypt PII data
-                    }
-                }
+                // Recursively process the JSON
+                processJson(jsonMap);
 
                 // Convert back to JSON string
                 String updatedJson = objectMapper.writeValueAsString(jsonMap);
@@ -62,7 +60,7 @@ public class EncryptJsonColumnWithEnum {
         // Apply UDF to update the binary column
         Dataset<Row> updatedDataset = dataset.withColumn(
                 "JsonBinary",
-                callUDF("encryptPiiFields", col("JsonBinary"))
+                callUDF("encryptRecursivePii", col("JsonBinary"))
         );
 
         // Show the result (decode binary for display)
@@ -73,5 +71,33 @@ public class EncryptJsonColumnWithEnum {
 
         // Stop SparkSession
         spark.stop();
+    }
+
+    // Recursive method to process JSON and encrypt PII fields
+    private static void processJson(Object jsonObject) {
+        if (jsonObject instanceof Map) {
+            Map<String, Object> jsonMap = (Map<String, Object>) jsonObject;
+            for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
+                String key = entry.getKey();
+                Object value = entry.getValue();
+
+                // Encrypt if the key is PII and the value is a String
+                if (PiiUtil.isPiiData(key) && value instanceof String) {
+                    jsonMap.put(key, PiiUtil.encryptData((String) value));
+                } 
+                // Recurse if the value is a Map or List
+                else if (value instanceof Map || value instanceof List) {
+                    processJson(value);
+                }
+            }
+        } else if (jsonObject instanceof List) {
+            List<Object> jsonList = (List<Object>) jsonObject;
+            for (Object item : jsonList) {
+                // Process each item if it's a Map or another List
+                if (item instanceof Map || item instanceof List) {
+                    processJson(item);
+                }
+            }
+        }
     }
 }

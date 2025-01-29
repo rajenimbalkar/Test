@@ -2,49 +2,50 @@ import org.apache.spark.sql.*;
 import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import static org.apache.spark.sql.functions.*;
 
-public class EncryptJsonColumn {
+public class EncryptJsonColumnWithEnum {
     public static void main(String[] args) {
         // Create SparkSession
         SparkSession spark = SparkSession.builder()
-                .appName("Encrypt JSON Column in Binary Format")
+                .appName("Encrypt JSON Column with Enum")
                 .master("local")
                 .getOrCreate();
 
-        // Sample dataset with a binary (blob) column containing JSON
+        // Sample dataset with a binary column containing JSON
         Dataset<Row> dataset = spark.createDataFrame(
-                java.util.Arrays.asList(
-                        RowFactory.create(1, "Alice", "{\"name\":\"Alice\",\"ssn\":\"123-45-6789\"}".getBytes(StandardCharsets.UTF_8)),
-                        RowFactory.create(2, "Bob", "{\"name\":\"Bob\",\"ssn\":\"987-65-4321\"}".getBytes(StandardCharsets.UTF_8))
+                Arrays.asList(
+                        RowFactory.create(1, "Alice", "{\"name\":\"Alice\",\"ssn\":\"123-45-6789\",\"email\":\"alice@example.com\"}".getBytes(StandardCharsets.UTF_8)),
+                        RowFactory.create(2, "Bob", "{\"name\":\"Bob\",\"ssn\":\"987-65-4321\",\"phone\":\"1234567890\"}".getBytes(StandardCharsets.UTF_8))
                 ),
                 new StructType()
                         .add("ID", DataTypes.IntegerType)
                         .add("Name", DataTypes.StringType)
-                        .add("JsonBinary", DataTypes.BinaryType)  // Binary column containing JSON
+                        .add("JsonBinary", DataTypes.BinaryType) // Binary column containing JSON
         );
 
-        // Register UDF to decrypt JSON, modify it, and re-encrypt it
-        spark.udf().register("encryptJson", (byte[] binaryData) -> {
+        // Register UDF to encrypt only PII fields
+        spark.udf().register("encryptPiiFields", (byte[] binaryData) -> {
             if (binaryData == null) return null;
 
             try {
-                // Convert byte array to JSON string
+                // Convert binary data to JSON string
                 String jsonString = new String(binaryData, StandardCharsets.UTF_8);
-                
-                // Parse JSON
+
+                // Parse JSON into a Map
                 ObjectMapper objectMapper = new ObjectMapper();
                 Map<String, Object> jsonMap = objectMapper.readValue(jsonString, HashMap.class);
 
-                // Encrypt specific column (e.g., "ssn")
-                if (jsonMap.containsKey("ssn")) {
-                    String ssn = (String) jsonMap.get("ssn");
-                    jsonMap.put("ssn", Base64.getEncoder().encodeToString(ssn.getBytes(StandardCharsets.UTF_8)));  // Simple Base64 encryption
+                // Encrypt only PII fields
+                for (Map.Entry<String, Object> entry : jsonMap.entrySet()) {
+                    String key = entry.getKey();
+                    if (PiiUtil.isPiiData(key) && entry.getValue() instanceof String) {
+                        jsonMap.put(key, PiiUtil.encryptData((String) entry.getValue())); // Encrypt PII data
+                    }
                 }
 
                 // Convert back to JSON string
@@ -58,10 +59,10 @@ public class EncryptJsonColumn {
             }
         }, DataTypes.BinaryType);
 
-        // Apply the UDF to update the binary column with the encrypted JSON
+        // Apply UDF to update the binary column
         Dataset<Row> updatedDataset = dataset.withColumn(
                 "JsonBinary",
-                callUDF("encryptJson", col("JsonBinary"))
+                callUDF("encryptPiiFields", col("JsonBinary"))
         );
 
         // Show the result (decode binary for display)

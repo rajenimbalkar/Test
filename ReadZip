@@ -1,0 +1,48 @@
+import org.apache.commons.io.IOUtils;
+import org.apache.spark.api.java.function.MapFunction;
+import org.apache.spark.sql.*;
+import org.apache.spark.sql.types.*;
+
+import java.io.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.ArrayList;
+import java.util.List;
+
+public class ReadZipIntoDataset {
+    public static void main(String[] args) throws Exception {
+        SparkSession spark = SparkSession.builder()
+                .appName("Read ZIP into Dataset<Row>")
+                .master("local[*]")
+                .getOrCreate();
+
+        // Read ZIP file as a Dataset<Row> (Binary format)
+        Dataset<Row> zipDataset = spark.read()
+                .format("binaryFile")
+                .load("path/to/your.zip");  // Load ZIP as binary
+
+        // Register UDF to extract file contents
+        spark.udf().register("extractZip", (byte[] zipBytes) -> extractZipFromBytes(zipBytes),
+                DataTypes.createArrayType(DataTypes.StringType));
+
+        // Apply UDF to extract and read ZIP contents
+        Dataset<Row> extractedData = zipDataset.withColumn("extractedFiles",
+                functions.callUDF("extractZip", zipDataset.col("content")));
+
+        extractedData.show(false); // Show extracted files content
+    }
+
+    // Extract ZIP file contents from byte array
+    public static List<String> extractZipFromBytes(byte[] zipBytes) throws IOException {
+        List<String> fileContents = new ArrayList<>();
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                IOUtils.copy(zis, bos);
+                fileContents.add(bos.toString("UTF-8")); // Convert bytes to string
+            }
+        }
+        return fileContents;
+    }
+}

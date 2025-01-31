@@ -1,0 +1,47 @@
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.UDFRegistration;
+import org.apache.spark.sql.api.java.UDF1;
+import org.apache.spark.sql.types.DataTypes;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
+import java.util.Arrays;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.mockito.Mockito.*;
+
+public class SparkUDFMockTest {
+    
+    private SparkSession spark;
+    private UDFRegistration udfRegistration;
+
+    @BeforeEach
+    void setup() {
+        spark = mock(SparkSession.class);
+        udfRegistration = mock(UDFRegistration.class);
+
+        // Mock Spark UDF registration
+        when(spark.udf()).thenReturn(udfRegistration);
+    }
+
+    @Test
+    void testUdfRegistration() throws Exception {
+        // Simulate UDF registration method
+        spark.udf().register("byteArrayUdf",
+                (UDF1<byte[], byte[]>) bytes -> bytes,
+                DataTypes.BinaryType);
+
+        // Capture the lambda function passed to register
+        ArgumentCaptor<UDF1<byte[], byte[]>> captor = ArgumentCaptor.forClass(UDF1.class);
+        verify(udfRegistration).register(eq("byteArrayUdf"), captor.capture(), eq(DataTypes.BinaryType));
+
+        // Get captured lambda function
+        UDF1<byte[], byte[]> udfFunction = captor.getValue();
+
+        // Test UDF function logic
+        byte[] inputBytes = new byte[]{1, 2, 3};
+        byte[] outputBytes = udfFunction.call(inputBytes);
+
+        assertArrayEquals(inputBytes, outputBytes, "UDF should return the same byte array");
+    }
+}

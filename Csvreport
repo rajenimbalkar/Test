@@ -1,0 +1,131 @@
+If you have two CSV files, but one of them has values with commas (e.g., `"Software Engineer, Java Developer"`), you need to properly read and merge them while preserving the data integrity. Here’s how you can do it:
+
+---
+
+### **Solution 1: Using Apache Commons CSV (Recommended)**
+Apache Commons CSV correctly handles quoted values, making it the safest way to process CSV files.
+
+#### **Maven Dependency**
+```xml
+<dependency>
+    <groupId>org.apache.commons</groupId>
+    <artifactId>commons-csv</artifactId>
+    <version>1.10.0</version>
+</dependency>
+```
+
+#### **Java Code to Read and Merge Two CSV Files**
+```java
+import org.apache.commons.csv.*;
+
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+
+public class MergeCSVFiles {
+    public static void main(String[] args) {
+        String file1 = "file1.csv";
+        String file2 = "file2.csv";
+        String outputFile = "merged_output.csv";
+
+        try (
+            Reader reader1 = Files.newBufferedReader(Paths.get(file1));
+            Reader reader2 = Files.newBufferedReader(Paths.get(file2));
+            BufferedWriter writer = Files.newBufferedWriter(Paths.get(outputFile));
+            CSVPrinter csvPrinter = new CSVPrinter(writer, CSVFormat.DEFAULT)
+        ) {
+            List<CSVRecord> records1 = CSVFormat.DEFAULT.withFirstRecordAsHeader().parse(reader1).getRecords();
+            List<CSVRecord> records2 = CSVFormat.DEFAULT.withFirstRecordAsHeader().parse(reader2).getRecords();
+            
+            // Print header (assumes both files have the same headers)
+            csvPrinter.printRecord("ID", "Name", "Description");
+
+            // Print rows from file 1
+            for (CSVRecord record : records1) {
+                csvPrinter.printRecord(record);
+            }
+
+            // Print rows from file 2
+            for (CSVRecord record : records2) {
+                csvPrinter.printRecord(record);
+            }
+
+            System.out.println("CSV files merged successfully!");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+#### **Why This Works?**
+- **Apache Commons CSV** automatically recognizes values enclosed in quotes (`"Software Engineer, Java Developer"`) and correctly parses them.
+- It merges both CSV files while preserving the correct structure.
+
+---
+
+### **Solution 2: Manual Handling (Using BufferedReader)**
+If you don’t want to use external libraries, you can manually handle commas inside quotes.
+
+#### **Java Code**
+```java
+import java.io.*;
+import java.util.*;
+
+public class MergeCSVFilesManually {
+    public static void main(String[] args) throws IOException {
+        String file1 = "file1.csv";
+        String file2 = "file2.csv";
+        String outputFile = "merged_output.csv";
+
+        List<String> allLines = new ArrayList<>();
+
+        // Read file 1
+        readCSVFile(file1, allLines);
+        // Read file 2
+        readCSVFile(file2, allLines);
+
+        // Write merged output
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+            for (String line : allLines) {
+                writer.write(line);
+                writer.newLine();
+            }
+        }
+        System.out.println("CSV files merged successfully!");
+    }
+
+    private static void readCSVFile(String filePath, List<String> allLines) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                allLines.add(processLine(line));
+            }
+        }
+    }
+
+    private static String processLine(String line) {
+        // If the line contains a comma and is not enclosed in quotes, enclose it
+        if (line.contains(",") && !line.startsWith("\"")) {
+            return "\"" + line.replace("\"", "\"\"") + "\"";
+        }
+        return line;
+    }
+}
+```
+
+#### **How This Works?**
+- Reads each file line by line.
+- Ensures values containing commas are enclosed in quotes.
+- Writes the cleaned output to a new merged CSV file.
+
+---
+
+### **Best Practice**
+- **Use Apache Commons CSV** whenever possible—it's reliable and prevents data corruption.
+- If manually processing, always **enclose values containing commas in quotes**.
+- If values contain double quotes (`"`), **escape them** by replacing `"` with `""`.
+
+Would you like help handling edge cases, such as different headers in both files?

@@ -1,0 +1,185 @@
+Here's a complete example of how you can implement this in Spring Boot with Java to:
+
+1. Connect to DB2.
+
+
+2. Fetch monthly token data for wallets.
+
+
+3. Write the results to an Excel file showing:
+
+Month-on-Month
+
+Quarter-on-Quarter
+
+Year-on-Year token consumption.
+
+
+
+
+
+---
+
+1. Dependencies (pom.xml)
+
+Make sure to add:
+
+<dependencies>
+    <!-- Spring Boot Starter JDBC -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+
+    <!-- DB2 Driver -->
+    <dependency>
+        <groupId>com.ibm.db2</groupId>
+        <artifactId>jcc</artifactId>
+        <version>11.5.7.0</version>
+    </dependency>
+
+    <!-- Apache POI for Excel -->
+    <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi-ooxml</artifactId>
+        <version>5.2.3</version>
+    </dependency>
+</dependencies>
+
+
+---
+
+2. application.properties
+
+spring.datasource.url=jdbc:db2://localhost:50000/yourdbname
+spring.datasource.username=yourusername
+spring.datasource.password=yourpassword
+spring.datasource.driver-class-name=com.ibm.db2.jcc.DB2Driver
+
+
+---
+
+3. TokenDataService.java
+
+package com.example.tokenreport.service;
+
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.io.FileOutputStream;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Month;
+import java.util.*;
+
+@Service
+public class TokenDataService {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    public void generateTokenReport() throws Exception {
+        String sql = """
+            SELECT wallet_id, MONTH(transaction_date) AS month, 
+                   QUARTER(transaction_date) AS quarter, 
+                   YEAR(transaction_date) AS year, 
+                   SUM(token_count) AS total_tokens 
+            FROM token_transactions 
+            WHERE YEAR(transaction_date) = 2024 
+            GROUP BY wallet_id, MONTH(transaction_date), QUARTER(transaction_date), YEAR(transaction_date)
+            ORDER BY wallet_id, year, month
+        """;
+
+        Map<String, Map<Integer, Integer>> walletMonthTokens = new HashMap<>();
+        Map<String, Map<Integer, Integer>> walletQuarterTokens = new HashMap<>();
+        Map<String, Map<Integer, Integer>> walletYearTokens = new HashMap<>();
+
+        jdbcTemplate.query(sql, (ResultSet rs) -> {
+            while (rs.next()) {
+                String walletId = rs.getString("wallet_id");
+                int month = rs.getInt("month");
+                int quarter = rs.getInt("quarter");
+                int year = rs.getInt("year");
+                int tokens = rs.getInt("total_tokens");
+
+                walletMonthTokens.computeIfAbsent(walletId, k -> new HashMap<>()).merge(month, tokens, Integer::sum);
+                walletQuarterTokens.computeIfAbsent(walletId, k -> new HashMap<>()).merge(quarter, tokens, Integer::sum);
+                walletYearTokens.computeIfAbsent(walletId, k -> new HashMap<>()).merge(year, tokens, Integer::sum);
+            }
+        });
+
+        writeToExcel(walletMonthTokens, walletQuarterTokens, walletYearTokens);
+    }
+
+    private void writeToExcel(Map<String, Map<Integer, Integer>> monthData,
+                              Map<String, Map<Integer, Integer>> quarterData,
+                              Map<String, Map<Integer, Integer>> yearData) throws Exception {
+
+        Workbook workbook = new XSSFWorkbook();
+
+        writeSheet(workbook, "Month-on-Month", monthData, 12, i -> Month.of(i).name());
+        writeSheet(workbook, "Quarter-on-Quarter", quarterData, 4, i -> "Q" + i);
+        writeSheet(workbook, "Year-on-Year", yearData, 1, i -> String.valueOf(i));
+
+        try (FileOutputStream out = new FileOutputStream("TokenReport.xlsx")) {
+            workbook.write(out);
+        }
+        workbook.close();
+    }
+
+    private void writeSheet(Workbook workbook, String sheetName,
+                            Map<String, Map<Integer, Integer>> data, int maxCols,
+                            java.util.function.Function<Integer, String> colNameMapper) {
+
+        Sheet sheet = workbook.createSheet(sheetName);
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("Wallet ID");
+
+        for (int i = 1; i <= maxCols; i++) {
+            header.createCell(i).setCellValue(colNameMapper.apply(i));
+        }
+
+        int rowNum = 1;
+        for (Map.Entry<String, Map<Integer, Integer>> entry : data.entrySet()) {
+            Row row = sheet.createRow(rowNum++);
+            row.createCell(0).setCellValue(entry.getKey());
+
+            Map<Integer, Integer> values = entry.getValue();
+            for (int i = 1; i <= maxCols; i++) {
+                row.createCell(i).setCellValue(values.getOrDefault(i, 0));
+            }
+        }
+    }
+}
+
+
+---
+
+4. Controller (Optional)
+
+@RestController
+@RequestMapping("/token")
+public class TokenDataController {
+
+    @Autowired
+    private TokenDataService service;
+
+    @GetMapping("/report")
+    public ResponseEntity<String> generateReport() {
+        try {
+            service.generateTokenReport();
+            return ResponseEntity.ok("Token report generated successfully.");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Error: " + e.getMessage());
+        }
+    }
+}
+
+
+---
+
+Let me know if you want this Excel file to include charts or if you'd like to export it to PDF as well.
+
